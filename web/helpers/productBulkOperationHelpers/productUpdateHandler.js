@@ -455,7 +455,7 @@ function handleVariantField(
   return JSON.stringify({
     productSet: {
       id: productId,
-      productOptions: options.map((op) => ({
+      productOptions: product.options.map((op) => ({
         name: op.name,
         values: (op.values ?? []).map((val) => ({ name: val })),
       })),
@@ -695,7 +695,7 @@ function handleOptionNameField({
   const productId = product.id || product._id;
   const position = config.optionPosition;
 
-  const option = Array.isArray(product?.options) ? product.options : [];
+const option = product.options?.find((op) => op.position === position);
 
   if (!option) return null;
 
@@ -752,7 +752,7 @@ function handleOptionNameField({
   return JSON.stringify({
   productSet: {
     id: productId,
-    productOptions: options.map((op) => ({
+    productOptions: product.options.map((op) => ({
       id: op.id,
       name: op.position === position ? newName : op.name,
       values: (op.values ?? []).map((v) => ({ name: v })),
@@ -899,10 +899,12 @@ function handleOptionValueField({
   });
 }
 
+
 export function getProductImage(product) {
-  if (product.featuredImageId) {
-    return null;
-  }
+ if (!product.featuredImageId && !product.featuredMedia?.preview?.image?.url) {
+  return "";
+}
+
 
   if (product.featuredMedia?.preview?.image?.url) {
     return product.featuredMedia.preview.image.url;
