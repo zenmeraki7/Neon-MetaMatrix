@@ -1,67 +1,46 @@
 import { prisma } from "../config/database.js";
 
-function normalizeShop(shop) {
-  return String(shop ?? "").trim();
-}
-
-function normalizeSearch(search = "") {
-  return String(search ?? "").trim();
-}
-
-function normalizeTake(value, fallback = 20, max = 1000) {
-  const parsed = Number.parseInt(String(value ?? fallback), 10);
-
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return fallback;
+class ProductRepository {
+  async countByWhere(where) {
+    return prisma.product.count({ where });
   }
 
-  return Math.min(parsed, max);
-}
-
-function normalizeSkip(value, fallback = 0) {
-  const parsed = Number.parseInt(String(value ?? fallback), 10);
-
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return fallback;
-  }
-
-  return parsed;
-}
-
-function normalizeWhere(where) {
-  return where && typeof where === "object" && !Array.isArray(where)
-    ? where
-    : {};
-}
-
-function normalizeInclude(include) {
-  return include && typeof include === "object" && !Array.isArray(include)
-    ? include
-    : null;
-}
-
-export const productRepository = {
-  async getDistinctProductTypes({ shop, search = "", take = 20 }) {
-    const normalizedShop = normalizeShop(shop);
-    const normalizedSearch = normalizeSearch(search);
-    const normalizedTake = normalizeTake(take, 20, 100);
-
-    if (!normalizedShop) {
-      return [];
-    }
-
+  async findProductsForList({ where, orderBy, skip, take }) {
     return prisma.product.findMany({
+      where,
+      select: {
+        title: true,
+        id: true,
+        status: true,
+        productType: true,
+        vendor: true,
+        totalInventory: true,
+        featuredImageUrl: true,
+        categoryName: true,
+        handle: true,
+        templateSuffix: true,
+        variantCount: true,
+        visibleOnlineStore: true,
+      },
+      orderBy,
+      skip,
+      take,
+    });
+  }
+
+  async findDistinctProductTypes({ shop, search = "", take = 20 }) {
+    const rows = await prisma.product.findMany({
       where: {
-        shop: normalizedShop,
-        productType: {
-          notIn: [null, ""],
-          ...(normalizedSearch
-            ? {
-                contains: normalizedSearch,
+        shop,
+        NOT: [{ productType: null }, { productType: "" }],
+        ...(search
+          ? {
+              productType: {
+                contains: search,
                 mode: "insensitive",
-              }
-            : {}),
-        },
+              },
+            }
+          : {}),
       },
       select: {
         productType: true,
@@ -70,50 +49,37 @@ export const productRepository = {
       orderBy: {
         productType: "asc",
       },
-      take: normalizedTake,
+      take,
     });
-  },
 
-  async countByWhere(where) {
-    return prisma.product.count({
-      where: normalizeWhere(where),
-    });
-  },
+    return rows.map((row) => ({
+      title: row.productType,
+    }));
+  }
 
-  async findManyForBulkPreview({
-    where,
-    include,
-    skip,
-    take,
-  }) {
-    const normalizedWhere = normalizeWhere(where);
-    const normalizedInclude = normalizeInclude(include);
-    const normalizedSkip = normalizeSkip(skip, 0);
-    const normalizedTake = normalizeTake(take, 20, 500);
+  async createManyProductsAndVariants({ productRows, variantRows }) {
+    return prisma.$transaction([
+      prisma.product.createMany({
+        data: productRows,
+        skipDuplicates: true,
+      }),
+      prisma.variant.createMany({
+        data: variantRows,
+        skipDuplicates: true,
+      }),
+    ]);
+  }
 
-    return prisma.product.findMany({
-      where: normalizedWhere,
-      ...(normalizedInclude ? { include: normalizedInclude } : {}),
-      orderBy: { createdAt: "desc" },
-      skip: normalizedSkip,
-      take: normalizedTake,
-    });
-  },
+  async deleteProductsAndVariantsByShop(shop) {
+    return prisma.$transaction([
+      prisma.variant.deleteMany({
+        where: { shop },
+      }),
+      prisma.product.deleteMany({
+        where: { shop },
+      }),
+    ]);
+  }
+}
 
-  async findManyForBulkBatch({
-    where,
-    include,
-    take,
-  }) {
-    const normalizedWhere = normalizeWhere(where);
-    const normalizedInclude = normalizeInclude(include);
-    const normalizedTake = normalizeTake(take, 100, 1000);
-
-    return prisma.product.findMany({
-      where: normalizedWhere,
-      ...(normalizedInclude ? { include: normalizedInclude } : {}),
-      orderBy: { id: "asc" },
-      take: normalizedTake,
-    });
-  },
-};
+export const productRepository = new ProductRepository();

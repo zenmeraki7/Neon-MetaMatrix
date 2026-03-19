@@ -1,104 +1,48 @@
-import shopify from "../../shopify.js";
-import {
-  getProductSetMutation,
-  PRODUCT_SET_MODE,
-} from "../../helpers/productBulkOperationHelpers/mutationTemplates.js";
-import {
-  createBulkEditHistoryAndQueue,
-  buildBulkEditHistoryPayload,
-} from "../bulkEdit/bulkEditPlanner.service.js";
-import { previewBulkEditProducts } from "../bulkEdit/bulkEditPreview.service.js";
-import { prepareBulkEditBatch } from "../../workers/bulkEdit/processBatch.service.js";
-import { resolveProductSetMode } from "../../domain/productFields/fieldMeta.js";
-import { runShopifyBulkMutation } from "../../infra/shopify/bulkMutation.service.js";
-
-function normalizeShop(shop) {
-  return String(shop ?? "").trim();
-}
-
-function normalizeRequest(req) {
-  return req && typeof req === "object" ? req : {};
-}
-
-function buildOperationName(prefix = "bulkEditProducts") {
-  return `${prefix}_${Date.now()}`;
-}
+import { addbulkEditJob } from "../../Jobs/Queues/bulkEditJob.js";
+import { clearKeyCaches } from "../../utils/cacheUtils.js";
+import { productBulkRepository } from "../../repositories/productBulk.repository.js";
+import { ProductBulkPlannerService } from "./productBulkPlanner.service.js";
+import { ProductBulkMutationService } from "./productBulkMutation.service.js";
+import { ProductBulkPreviewService } from "./productBulkPreview.service.js";
 
 export default class ProductBulkService {
   constructor(session) {
     this.session = session;
-    this.client = new shopify.api.clients.Graphql({ session });
-  }
-
-  get shop() {
-    return normalizeShop(this.session?.shop);
+    this.plannerService = new ProductBulkPlannerService(session, productBulkRepository);
+    this.mutationService = new ProductBulkMutationService(session);
+    this.previewService = new ProductBulkPreviewService(session, productBulkRepository);
   }
 
   async bulkEditProducts(req) {
-    const safeReq = normalizeRequest(req);
+    const payload = await this.plannerService.buildBulkEditHistoryPayload(
+      req?.body || {},
+      req?.subscription || {},
+    );
 
-    return createBulkEditHistoryAndQueue({
-      body: safeReq.body,
-      shop: this.shop,
-      subscription: safeReq.subscription || {},
+    const history = await productBulkRepository.createEditHistory(payload);
+
+    await clearKeyCaches(`${history.shop}:fetchHistories`);
+
+    await addbulkEditJob({
+      historyId: history.id,
       session: this.session,
     });
-  }
 
-  async _bulkOperationEdit(body, subscription) {
-    return buildBulkEditHistoryPayload({
-      body,
-      shop: this.shop,
-      subscription: subscription || {},
-    });
+    return history;
   }
 
   async _bulkOperationHelper({ formattedProducts, field }) {
-    const mode = resolveProductSetMode(field, PRODUCT_SET_MODE);
-    const mutation = getProductSetMutation(mode);
-
-    return runShopifyBulkMutation({
-      client: this.client,
-      shop: this.shop,
-      operationName: buildOperationName(),
+    return this.mutationService.runBulkOperation({
       formattedProducts,
-      mutation,
+      field,
     });
   }
 
   async _preparingBulkOperation({ historyId }) {
-    return prepareBulkEditBatch({
-      historyId,
-      shop: this.shop,
-    });
+    return this.plannerService.prepareBulkOperationBatch({ historyId });
   }
 
-  async trackEditProducts({
-    field,
-    editType,
-    editValue,
-    filterParams,
-    searchKey,
-    replaceText,
-    supportValue,
-    page = 1,
-    limit = 20,
-    lang,
-    subscription = {},
-  }) {
-    return previewBulkEditProducts({
-      shop: this.shop,
-      field,
-      editType,
-      editValue,
-      filterParams,
-      searchKey,
-      replaceText,
-      supportValue,
-      page,
-      limit,
-      lang,
-      subscription: subscription || {},
-    });
+  async trackEditProducts(args) {
+    return this.previewService.trackEditProducts(args);
   }
 }

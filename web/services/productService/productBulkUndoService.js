@@ -2,20 +2,44 @@ import { uploadToShopifyStagedTarget } from "../../utils/productBulkEditUtils.js
 import { addbulkUndoJob } from "../../Jobs/Queues/bulkUndoJob.js";
 import {
   getProductSetMutation,
-  INVENTORY_ADJUST_MUTATION,
   PRODUCT_SET_MODE,
-  PRODUCT_SET_MUTATION,
 } from "../../helpers/productBulkOperationHelpers/mutationTemplates.js";
 import shopify from "../../shopify.js";
 import { clearKeyCaches } from "../../utils/cacheUtils.js";
 import { FIELD_CONFIGS } from "../../helpers/productBulkOperationHelpers/constants.js";
-import { prisma } from "../../config/database.js";
+import { undoEditRepository } from "../../repositories/undoEdit.repository.js";
 
 const OPTION_NAME_FIELDS = new Set([
   "option1Name",
   "option2Name",
   "option3Name",
 ]);
+
+const OPTION_VALUE_FIELDS = new Set([
+  "option1Values",
+  "option2Values",
+  "option3Values",
+]);
+
+function isVariantLevelField(field) {
+  return Boolean(FIELD_CONFIGS?.[field]?.isVariantLevel);
+}
+
+function getSafeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function resolveUndoMutationMode(field = "") {
+  if (OPTION_NAME_FIELDS.has(field)) {
+    return PRODUCT_SET_MODE.BOTH;
+  }
+
+  if (isVariantLevelField(field)) {
+    return PRODUCT_SET_MODE.VARIANT_ONLY;
+  }
+
+  return PRODUCT_SET_MODE.PRODUCT_ONLY;
+}
 
 class UndoEditService {
   constructor(session) {
@@ -26,44 +50,39 @@ class UndoEditService {
   }
 
   async undoEdit(historyId) {
-    // ✅ CONVERTED TO PRISMA
-    const editedHistory = await prisma.editHistory.findUnique({
-      where: { id: historyId },
-      select: { 
-        status: true, 
-        undo: true 
-      },
+    const editedHistory = await undoEditRepository.findUndoHistoryByIdAndShop({
+      id: historyId,
+      shop: this.session.shop,
     });
 
     if (!editedHistory) {
       throw new Error("Edit history not found");
     }
 
-    // Handle undo field which is JSON in Prisma
-    const undoData = editedHistory.undo || {};
-    
-    if (editedHistory.status !== "completed" && undoData.allowed === false) {
+    const undoData =
+      editedHistory.undo && typeof editedHistory.undo === "object"
+        ? editedHistory.undo
+        : {};
+
+    if (editedHistory.status !== "completed" || undoData.allowed === false) {
       throw new Error("Undo can only be performed on completed edits");
     }
 
-    // ✅ CONVERTED TO PRISMA
-    const updatedHistory = await prisma.editHistory.update({
-      where: { id: historyId },
-      data: {
-        undo: {
-          ...undoData,
-          status: "pending",
-          durationMs: 0,
-          processedCount: 0,
-          startedAt: new Date(),
-        },
+    const updatedHistory = await undoEditRepository.updateUndoStateByIdAndShop({
+      id: historyId,
+      shop: this.session.shop,
+      undo: {
+        ...undoData,
+        status: "pending",
+        durationMs: 0,
+        processedCount: 0,
+        startedAt: new Date(),
       },
-      select: { id: true },
     });
 
     await clearKeyCaches(`${this.session.shop}:fetchHistories`);
     await clearKeyCaches(`${this.session.shop}:historyDetails:${historyId}`);
-    
+
     await addbulkUndoJob({
       historyId,
       shop: this.session.shop,
@@ -80,110 +99,127 @@ class UndoEditService {
     const formattedProducts = [];
     let lastId = null;
     let count = 0;
-    let mode = PRODUCT_SET_MODE.PRODUCT_ONLY;
+    const mode = resolveUndoMutationMode(field);
 
-    if (OPTION_NAME_FIELDS.has(field)) {
-      mode = PRODUCT_SET_MODE.BOTH;
-    } else if (FIELD_CONFIGS[field]?.isVariantLevel) {
-      mode = PRODUCT_SET_MODE.VARIANT_ONLY;
-    }
-
-    for (const product of products) {
+    for (const product of getSafeArray(products)) {
       const payload = {
-        id: product.productId,
+        id: product?.productId,
       };
 
-      if (product.productFieldChanges.length > 0) {
-        product.productFieldChanges.forEach((fld) => {
-          if (
-            !["option1Name", "option2Name", "option3Name"].includes(fld.field)
-          ) {
-            const fieldPayload = this.getProductFieldPayload(
-              fld.field,
-              fld.revertValue,
-              fld.oldValue
-            );
+      const productFieldChanges = getSafeArray(product?.productFieldChanges);
+      const variantFieldChanges = getSafeArray(product?.variantFieldChanges);
+      const options = getSafeArray(product?.options);
 
-            // 🔥 merge safely into main payload
-            Object.assign(payload, fieldPayload);
+      if (!payload.id) {
+        continue;
+      }
+
+      if (productFieldChanges.length > 0) {
+        productFieldChanges.forEach((fld) => {
+          if (!fld || OPTION_NAME_FIELDS.has(fld.field)) {
+            return;
           }
+
+          const fieldPayload = this.getProductFieldPayload(
+            fld.field,
+            fld.revertValue,
+            fld.oldValue,
+          );
+
+          Object.assign(payload, fieldPayload);
         });
       }
 
-      if (product.variantFieldChanges.length > 0) {
-        payload.productOptions = product.options.map((op) => ({
-          name: op.name,
-          values: op.values?.map((val) => ({ name: val })),
+      if (variantFieldChanges.length > 0) {
+        payload.productOptions = options.map((op) => ({
+          name: op?.name,
+          values: getSafeArray(op?.values).map((val) => ({ name: val })),
         }));
-        
-        payload.variants = product.variantFieldChanges?.map((variant) => {
+
+        payload.variants = variantFieldChanges.map((variant) => {
           const variantPayload = {
-            id: variant.variantId,
-            optionValues: variant.selectedOptions?.map((op) => ({
-              optionName: op.name,
-              name: op.value,
+            id: variant?.variantId,
+            optionValues: getSafeArray(variant?.selectedOptions).map((op) => ({
+              optionName: op?.name,
+              name: op?.value,
             })),
           };
-          
-          const changePayload =
-            variant.changes?.reduce((acc, fld) => {
-              acc[fld.field] = fld.revertValue || fld.oldValue;
-              return acc;
-            }, {}) || {};
 
-          if (
-            ["option1Values", "option2Values", "option3Values"].includes(
-              field
-            )
-          ) {
+          const changePayload = getSafeArray(variant?.changes).reduce(
+            (acc, fld) => {
+              if (!fld?.field) {
+                return acc;
+              }
+
+              acc[fld.field] = fld.revertValue ?? fld.oldValue;
+              return acc;
+            },
+            {},
+          );
+
+          if (OPTION_VALUE_FIELDS.has(field)) {
             return variantPayload;
-          } else {
-            return { ...variantPayload, ...changePayload };
           }
+
+          return { ...variantPayload, ...changePayload };
         });
       }
 
       formattedProducts.push(JSON.stringify({ productSet: payload }));
-      
-      // Note: In Prisma, _id becomes just 'id'
-      lastId = product?.id;
-      count++;
+      lastId = product?.productId ?? null;
+      count += 1;
     }
 
     const stagedRes = await this.client.query({
       data: {
         query: `
-            mutation stagedUploadsCreate {
-              stagedUploadsCreate(input: [
-                { filename: "${operationName}", mimeType: "text/jsonl", resource: BULK_MUTATION_VARIABLES, httpMethod: POST }
-              ]) {
-                stagedTargets {
-                  url resourceUrl parameters { name value }
-                }
-                userErrors { field message }
+          mutation stagedUploadsCreate {
+            stagedUploadsCreate(input: [
+              {
+                filename: "${operationName}",
+                mimeType: "text/jsonl",
+                resource: BULK_MUTATION_VARIABLES,
+                httpMethod: POST
               }
+            ]) {
+              stagedTargets {
+                url
+                resourceUrl
+                parameters { name value }
+              }
+              userErrors { field message }
             }
-          `,
+          }
+        `,
       },
     });
 
-    const ndjson = formattedProducts.join("\n");
-    const userErrors = stagedRes?.body?.data?.stagedUploadsCreate?.userErrors;
-    
-    if (userErrors && userErrors.length > 0) {
+    const stagedTopLevelErrors = stagedRes?.body?.errors || [];
+    if (stagedTopLevelErrors.length > 0) {
       throw new Error(
-        `Shopify API returned errors: ${JSON.stringify(userErrors)}`
+        stagedTopLevelErrors[0]?.message || "Shopify staged upload request failed",
+      );
+    }
+
+    const ndjson = formattedProducts.join("\n");
+    const stagedUserErrors =
+      stagedRes?.body?.data?.stagedUploadsCreate?.userErrors || [];
+
+    if (stagedUserErrors.length > 0) {
+      throw new Error(
+        `Shopify API returned errors: ${JSON.stringify(stagedUserErrors)}`,
       );
     }
 
     const target =
       stagedRes?.body?.data?.stagedUploadsCreate?.stagedTargets?.[0];
+
     if (!target) {
       throw new Error("Failed to get staged upload target from Shopify");
     }
 
     const keyUrl = await uploadToShopifyStagedTarget(target, ndjson);
-    
+
     const bulkRes = await this.client.query({
       data: {
         query: `
@@ -200,18 +236,31 @@ class UndoEditService {
       },
     });
 
-    const bulkErrors =
-      bulkRes?.body?.data?.bulkOperationRunMutation?.userErrors;
-    if (bulkErrors && bulkErrors.length > 0) {
+    const bulkTopLevelErrors = bulkRes?.body?.errors || [];
+    if (bulkTopLevelErrors.length > 0) {
       throw new Error(
-        `Bulk operation returned errors: ${JSON.stringify(bulkErrors)}`
+        bulkTopLevelErrors[0]?.message || "Shopify bulk mutation request failed",
       );
     }
 
-    const result = bulkRes.body?.data?.bulkOperationRunMutation;
+    const bulkErrors =
+      bulkRes?.body?.data?.bulkOperationRunMutation?.userErrors || [];
+
+    if (bulkErrors.length > 0) {
+      throw new Error(
+        `Bulk operation returned errors: ${JSON.stringify(bulkErrors)}`,
+      );
+    }
+
+    const result = bulkRes?.body?.data?.bulkOperationRunMutation;
+    const bulkOperationId = result?.bulkOperation?.id;
+
+    if (!bulkOperationId) {
+      throw new Error("Missing bulkOperationId in Shopify response");
+    }
 
     return {
-      bulkOperationId: result?.bulkOperation?.id,
+      bulkOperationId,
       lastProductId: lastId,
       count,
     };

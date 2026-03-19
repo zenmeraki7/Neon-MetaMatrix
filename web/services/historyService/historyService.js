@@ -1,9 +1,9 @@
 import { NotFoundError } from "../../utils/errorUtils.js";
 import { EDIT_TYPES, FIELD_TRANSLATIONS } from "../../Config/constants.js";
 import { getCache, setCache } from "../../utils/cacheUtils.js";
-import { prisma } from "../../config/database.js";
+import { historyRepository } from "../../repositories/history.repository.js";
 
-const validTypes = ["Manual edit", "Scheduled edit", "Recurring edit"];
+const VALID_TYPES = new Set(["Manual edit", "Scheduled edit", "Recurring edit"]);
 
 function getLocalizedJsonText(value, lang = "en") {
   if (value == null) return null;
@@ -13,6 +13,20 @@ function getLocalizedJsonText(value, lang = "en") {
   }
 
   return value[lang] ?? value.en ?? Object.values(value)[0] ?? null;
+}
+
+function normalizePositiveInt(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed < 1) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function assertValidHistoryId(id) {
+  if (!id || id === "undefined" || id === "null") {
+    throw new NotFoundError(`Invalid history ID format: ${id}`, "Invalid ID");
+  }
 }
 
 export class EditHistoryService {
@@ -40,25 +54,24 @@ export class EditHistoryService {
 
   async getEditHistories({ type, search, cursor, limit = 10, lang }) {
     try {
-      const where = {
-        shop: this.session.shop,
+      const shop = this.session.shop;
+      const language = lang || "en";
+      const limitNumber = normalizePositiveInt(limit, 10);
+
+      const baseWhere = {
+        shop,
         ...(type === "Favorites"
           ? { isFavourite: true }
-          : validTypes.includes(type)
-          ? { type }
-          : {}),
+          : VALID_TYPES.has(type)
+            ? { type }
+            : {}),
       };
-
-      const limitNumber = Math.max(1, parseInt(limit, 10));
 
       let cursorFilter = {};
       if (cursor) {
-        const cursorRecord = await prisma.editHistory.findFirst({
-          where: {
-            id: cursor,
-            shop: this.session.shop,
-          },
-          select: { id: true, createdAt: true },
+        const cursorRecord = await historyRepository.findHistoryCursorRecord({
+          id: cursor,
+          shop,
         });
 
         if (cursorRecord) {
@@ -76,7 +89,7 @@ export class EditHistoryService {
         }
       }
 
-      const cacheKey = `${this.session.shop}:fetchHistories:${limitNumber}:${cursor || "first"}:${type || "all"}:${search || ""}:${lang || "en"}`;
+      const cacheKey = `${shop}:fetchHistories:${limitNumber}:${cursor || "first"}:${type || "all"}:${search || ""}:${language}`;
       const cacheHistories = await getCache(cacheKey);
 
       if (cacheHistories) {
@@ -89,24 +102,12 @@ export class EditHistoryService {
       const queryWhere =
         Object.keys(cursorFilter).length > 0
           ? {
-              AND: [where, cursorFilter],
+              AND: [baseWhere, cursorFilter],
             }
-          : where;
+          : baseWhere;
 
-      const records = await prisma.editHistory.findMany({
+      const records = await historyRepository.findEditHistoriesPage({
         where: queryWhere,
-        select: {
-          id: true,
-          title: true,
-          status: true,
-          processedCount: true,
-          totalItems: true,
-          editTime: true,
-          shop: true,
-          undo: true,
-          createdAt: true,
-        },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: limitNumber + 1,
       });
 
@@ -115,11 +116,11 @@ export class EditHistoryService {
 
       const formattedData = edges.map((record) => ({
         ...record,
-        title: getLocalizedJsonText(record.title, lang),
+        title: getLocalizedJsonText(record.title, language),
       }));
 
-      const totalCount = await prisma.editHistory.count({
-        where,
+      const totalCount = await historyRepository.countEditHistories({
+        where: baseWhere,
       });
 
       const returnData = {
@@ -138,44 +139,26 @@ export class EditHistoryService {
         ref: "Fetched edit histories successfully from database.",
       };
     } catch (error) {
-      throw new Error("Error fetching history records: " + error.message);
+      throw new Error(`Error fetching history records: ${error.message}`);
     }
   }
 
   async getHistoryDetails(id, lang) {
     try {
-      if (!id || id === "undefined" || id === "null") {
-        throw new NotFoundError(
-          `Invalid history ID format: ${id}`,
-          "Invalid ID",
-        );
+      assertValidHistoryId(id);
+
+      const shop = this.session.shop;
+      const language = lang || "en";
+      const cacheKey = `${shop}:historyDetails:${id}-${language}`;
+      const cacheData = await getCache(cacheKey);
+
+      if (cacheData) {
+        return cacheData;
       }
 
-      const cacheKey = `${this.session.shop}:historyDetails:${id}-${lang}`;
-      const cacheData = await getCache(cacheKey);
-      if (cacheData) return cacheData;
-
-      const history = await prisma.editHistory.findFirst({
-        where: {
-          id,
-          shop: this.session.shop,
-        },
-        select: {
-          id: true,
-          title: true,
-          status: true,
-          durationMs: true,
-          processedCount: true,
-          totalItems: true,
-          editTime: true,
-          createdAt: true,
-          updatedAt: true,
-          error: true,
-          undo: true,
-          type: true,
-          shop: true,
-          rules: true,
-        },
+      const history = await historyRepository.findHistoryDetailsByIdAndShop({
+        id,
+        shop,
       });
 
       if (!history) {
@@ -190,13 +173,13 @@ export class EditHistoryService {
 
       const returnData = {
         ...history,
-        title: getLocalizedJsonText(history.title, lang),
+        title: getLocalizedJsonText(history.title, language),
         field:
-          FIELD_TRANSLATIONS?.[rule?.field]?.[lang] ??
+          FIELD_TRANSLATIONS?.[rule?.field]?.[language] ??
           rule?.field ??
           "unknown_field",
         type:
-          EDIT_TYPES?.[history.type]?.[lang] ??
+          EDIT_TYPES?.[history.type]?.[language] ??
           history.type ??
           "unknown_type",
         progressCount: Number(history.processedCount || 0),
@@ -208,24 +191,21 @@ export class EditHistoryService {
       if (error instanceof NotFoundError) {
         throw error;
       }
-      throw new Error("Error fetching history details: " + error.message);
+
+      throw new Error(`Error fetching history details: ${error.message}`);
     }
   }
 
   async getHistoryEditChanges(id, page = 1, limit = 10) {
     try {
-      if (!id || id === "undefined" || id === "null") {
-        throw new NotFoundError(
-          `Invalid history ID format: ${id}`,
-          "Invalid ID",
-        );
-      }
+      assertValidHistoryId(id);
 
-      const pageNum = Math.max(1, parseInt(page, 10));
-      const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
+      const shop = this.session.shop;
+      const pageNum = normalizePositiveInt(page, 1);
+      const limitNum = Math.min(100, normalizePositiveInt(limit, 10));
       const skip = (pageNum - 1) * limitNum;
 
-      const cacheKey = `${this.session.shop}:historyChanges:${id}:page${pageNum}:limit${limitNum}`;
+      const cacheKey = `${shop}:historyChanges:${id}:page${pageNum}:limit${limitNum}`;
       const cacheData = await getCache(cacheKey);
 
       if (cacheData) {
@@ -238,12 +218,9 @@ export class EditHistoryService {
         };
       }
 
-      const history = await prisma.editHistory.findFirst({
-        where: {
-          id,
-          shop: this.session.shop,
-        },
-        select: { id: true },
+      const history = await historyRepository.findHistoryExistsByIdAndShop({
+        id,
+        shop,
       });
 
       if (!history) {
@@ -253,33 +230,16 @@ export class EditHistoryService {
         );
       }
 
-      const totalCount = await prisma.changeRecord.count({
-        where: {
-          editHistoryId: id,
-          shop: this.session.shop,
-        },
+      const totalCount = await historyRepository.countHistoryChanges({
+        editHistoryId: id,
+        shop,
       });
 
       const totalPages = Math.ceil(totalCount / limitNum);
 
-      const changes = await prisma.changeRecord.findMany({
-        where: {
-          editHistoryId: id,
-          shop: this.session.shop,
-        },
-        select: {
-          id: true,
-          title: true,
-          productFieldChanges: true,
-          variantFieldChanges: true,
-          status: true,
-          image: true,
-          productId: true,
-          createdAt: true,
-        },
-        orderBy: {
-          createdAt: "desc",
-        },
+      const changes = await historyRepository.findHistoryChangesPage({
+        editHistoryId: id,
+        shop,
         skip,
         take: limitNum,
       });
@@ -298,7 +258,8 @@ export class EditHistoryService {
       if (error instanceof NotFoundError) {
         throw error;
       }
-      throw new Error("Error fetching history changes: " + error.message);
+
+      throw new Error(`Error fetching history changes: ${error.message}`);
     }
   }
 }
