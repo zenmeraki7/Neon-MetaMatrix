@@ -276,10 +276,12 @@ async _preparingBulkOperation({ historyId }) {
       };
     }
 
-    const include =
-      OPTION_NAME_FIELDS.has(rule.field) || FIELD_CONFIGS?.[rule.field]?.isVariantLevel
-        ? { variants: true }
-        : undefined;
+ const include =
+  OPTION_NAME_FIELDS.has(rule.field) ||
+  FIELD_CONFIGS?.[rule.field]?.isVariantLevel ||
+  VARIANT_LEVEL_FIELDS.has(rule.field)   
+    ? { variants: true }
+    : undefined;
 
     const products = await prisma.product.findMany({
       where,
@@ -294,11 +296,27 @@ async _preparingBulkOperation({ historyId }) {
     let count = 0;
     const batchId = crypto.randomUUID();
 
-    for (const rawProduct of products) {
-      const product = {
-        ...rawProduct,
-        variants: Array.isArray(rawProduct.variants) ? rawProduct.variants : [],
-      };
+   for (const rawProduct of products) {
+  const product = {
+    ...rawProduct,
+    // ✅ normalize options from optionsJson
+    options: Array.isArray(rawProduct.options)
+      ? rawProduct.options
+      : Array.isArray(rawProduct.optionsJson)
+      ? rawProduct.optionsJson
+      : [],
+    // ✅ normalize variants + their selectedOptions from selectedOptionsJson
+    variants: Array.isArray(rawProduct.variants)
+      ? rawProduct.variants.map((v) => ({
+          ...v,
+          selectedOptions: Array.isArray(v.selectedOptions)
+            ? v.selectedOptions
+            : Array.isArray(v.selectedOptionsJson)
+            ? v.selectedOptionsJson
+            : [],
+        }))
+      : [],
+  };
 
       const result = getUpdatedProducts({
         product,
@@ -423,7 +441,11 @@ const product = {
     formattedProducts.push(result);
   }
 }
-
+console.log("🧪 formattedProducts ARRAY count:", formattedProducts.length);
+console.log(
+  "🧪 formattedProducts ARRAY sample:",
+  JSON.stringify(formattedProducts.slice(0, 2), null, 2),
+);
       return {
         message: "tracking successful",
         data: {

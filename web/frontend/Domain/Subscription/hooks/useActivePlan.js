@@ -2,8 +2,7 @@
 import { useEffect, useCallback } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import {
-  verifyActivePlan,
-  activateBilling,
+ fetchSubscriptionPlans,
   selectActivePlan,
   selectActivePlanStatus,
   selectActivePlanError,
@@ -26,29 +25,22 @@ export const useActivePlan = () => {
   // Check for charge_id in URL
   const urlParams = new URLSearchParams(window.location.search);
   const chargeId = urlParams.get("charge_id");
+  const shopParam = urlParams.get("shop");
+
 
   // Verify current plan
-  const verifyPlan = useCallback(() => {
-    dispatch(verifyActivePlan());
+ const verifyPlan = useCallback(() => {
+    dispatch(fetchSubscriptionPlans());
   }, [dispatch]);
 
-  // Activate billing with charge ID
-  const activatePlanBilling = useCallback(
-    (id) => {
-      if (!id) return;
-      dispatch(activateBilling(id));
-    },
-    [dispatch]
-  );
+
+ 
 
   // Check initial state based on URL
-  useEffect(() => {
-    // if (chargeId) {
-    //   activatePlanBilling(chargeId);
-    // } else {
-    activePlan == null && verifyPlan();
-    // }
-  }, [chargeId, activatePlanBilling, verifyPlan, activePlan]);
+ useEffect(() => {
+    if (activePlan == null) verifyPlan();
+  }, [activePlan]);
+
 
   // Clean up URL after activation
   useEffect(() => {
