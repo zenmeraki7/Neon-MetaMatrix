@@ -1,20 +1,44 @@
-function extractShopFromSession(session) {
-  return String(session?.shop ?? "").trim();
+// web/services/shared/session.service.js
+function createHttpError(message, statusCode = 401) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
 }
 
-export function getShopSession(res) {
-  return res?.locals?.shopify?.session ?? null;
+function normalizeSession(session) {
+  return session && typeof session === "object" ? session : null;
 }
 
-export function assertShopSession(res) {
-  const session = getShopSession(res);
-  const shop = extractShopFromSession(session);
+function normalizeShop(shop) {
+  return typeof shop === "string" ? shop.trim() : "";
+}
 
-  if (!shop) {
-    const error = new Error("Session expired");
-    error.statusCode = 403;
-    throw error;
+export function getShopifySession(res) {
+  return normalizeSession(res?.locals?.shopify?.session);
+}
+
+export function assertShopSession(res, options = {}) {
+  const {
+    missingSessionMessage = "Session expired",
+    missingShopMessage = "Shopify session missing",
+    missingSessionStatusCode = 403,
+    missingShopStatusCode = 401,
+  } = options;
+
+  const session = getShopifySession(res);
+
+  if (!session) {
+    throw createHttpError(missingSessionMessage, missingSessionStatusCode);
   }
 
-  return session;
+  const shop = normalizeShop(session.shop);
+
+  if (!shop) {
+    throw createHttpError(missingShopMessage, missingShopStatusCode);
+  }
+
+  return {
+    ...session,
+    shop,
+  };
 }

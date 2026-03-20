@@ -1,20 +1,54 @@
+// web/controllers/product/productQuery.controller.js
 import { successResponse, errorResponse } from "../../utils/responseUtils.js";
 import { logApiError } from "../../utils/errorLogUtils.js";
 import { productQueryService } from "../../services/product/productQuery.service.js";
+import { productMetadataSyncService } from "../../services/product/productMetadataSync.service.js";
 import { assertShopSession } from "../../services/shared/session.service.js";
 
-function getErrorStatusCode(err) {
+function getErrorStatusCode(err, fallbackStatusCode = 500) {
   const statusCode = Number(err?.statusCode);
-  return Number.isInteger(statusCode) && statusCode > 0 ? statusCode : 500;
+  return Number.isInteger(statusCode) && statusCode >= 400 && statusCode <= 599
+    ? statusCode
+    : fallbackStatusCode;
 }
 
-function getErrorMessage(err, fallbackMessage) {
-  const message = String(err?.message ?? "").trim();
-  return message || fallbackMessage;
+function getSafeErrorMessage(err, fallbackMessage, statusCode) {
+  const message = typeof err?.message === "string" ? err.message.trim() : "";
+  if (statusCode < 500 && message) {
+    return message;
+  }
+  return fallbackMessage;
 }
 
 function normalizeSearch(search) {
-  return typeof search === "string" ? search : "";
+  return typeof search === "string" ? search.trim() : "";
+}
+
+function normalizeFilterParams(filterParams) {
+  return Array.isArray(filterParams) ? filterParams : [];
+}
+
+async function handleControllerError({
+  err,
+  req,
+  res,
+  session,
+  source,
+  fallbackMessage,
+  fallbackStatusCode = 500,
+}) {
+  await logApiError({
+    shop: session?.shop,
+    err,
+    req,
+    source,
+  });
+
+  const statusCode = getErrorStatusCode(err, fallbackStatusCode);
+
+  return res
+    .status(statusCode)
+    .json(errorResponse(getSafeErrorMessage(err, fallbackMessage, statusCode)));
 }
 
 export const getProductsWithQuery = async (req, res) => {
@@ -25,8 +59,8 @@ export const getProductsWithQuery = async (req, res) => {
 
     const result = await productQueryService.getProductsWithQuery({
       shop: session.shop,
-      queryParams: req.query,
-      filterParams: req.body?.filterParams,
+      queryParams: req.query || {},
+      filterParams: normalizeFilterParams(req.body?.filterParams),
       environment: process.env.NODE_ENV,
     });
 
@@ -34,16 +68,14 @@ export const getProductsWithQuery = async (req, res) => {
       .status(200)
       .json(successResponse("Products fetched successfully", result));
   } catch (err) {
-    await logApiError({
-      shop: session?.shop,
+    return handleControllerError({
       err,
       req,
+      res,
+      session,
       source: "GET /api/products",
+      fallbackMessage: "Failed to fetch products",
     });
-
-    return res
-      .status(getErrorStatusCode(err))
-      .json(errorResponse(getErrorMessage(err, "Failed to fetch products")));
   }
 };
 
@@ -65,16 +97,71 @@ export const getProductTypes = async (req, res) => {
         : "Product types fetched from product mirror",
     });
   } catch (err) {
-    await logApiError({
-      shop: session?.shop,
+    return handleControllerError({
       err,
       req,
+      res,
+      session,
       source: "GET /api/product-types",
+      fallbackMessage: "Failed to fetch product types",
+    });
+  }
+};
+
+export const checkEditStatus = async (req, res) => {
+  let session = null;
+
+  try {
+    session = assertShopSession(res);
+
+    const history = await productQueryService.checkEditStatus({
+      shop: session.shop,
+      historyId: req.params.id,
     });
 
-    return res.status(getErrorStatusCode(err)).json({
-      error: getErrorMessage(err, "Failed to fetch product types"),
-      message: "Failed to fetch product types",
+    if (!history) {
+      return res.status(200).json({
+        status: "not_found",
+        message: "No history found",
+      });
+    }
+
+    return res.status(200).json({
+      rootObjectCount: history.processedCount,
+      totalItems: history.totalItems,
+      duration: history.durationMs,
+    });
+  } catch (err) {
+    return handleControllerError({
+      err,
+      req,
+      res,
+      session,
+      source: "GET /api/edit-status/:id",
+      fallbackMessage: "Failed to fetch edit status",
+    });
+  }
+};
+
+export const clearProductTypes = async (req, res) => {
+  let session = null;
+
+  try {
+    session = assertShopSession(res);
+
+    const result = await productMetadataSyncService.clearProductTypes({
+      session,
+    });
+
+    return res.status(200).json(result);
+  } catch (err) {
+    return handleControllerError({
+      err,
+      req,
+      res,
+      session,
+      source: "POST /api/product-types/clear",
+      fallbackMessage: "Failed to refresh product types",
     });
   }
 };

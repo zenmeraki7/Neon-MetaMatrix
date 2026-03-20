@@ -1,17 +1,8 @@
-// helpers/webhookHelpers/bulkOperations/productTypeSync.js
-// (or keep your existing path and filename)
-
 import shopify from "../../../shopify.js";
-// getIndianStyleDuration is no longer used for writing to DB (SyncHistory.duration is Int)
-// but you can still use it at read-time in controllers if you want pretty strings.
-import { getIndianStyleDuration } from "../../../utils/timeStringConverter.js";
 import axios from "axios";
 import readline from "readline";
-import fs from "fs";
 
 import { getSession } from "../../../utils/sessionHandler.js";
-import { Services } from "../../../services/productService/productFilterService.js";
-import CacheService from "../../../utils/cacheService.js";
 import { emitToUser } from "../../../socket.js";
 import { clearKeyCaches } from "../../../utils/cacheUtils.js";
 
@@ -31,9 +22,7 @@ export async function handleSyncOperation(bulkOperationId) {
       where: { bulkOperationId },
     });
 
-    if (!syncHistory) {
-      return;
-    }
+    if (!syncHistory) return;
 
     let recordCount = 0;
 
@@ -42,128 +31,86 @@ export async function handleSyncOperation(bulkOperationId) {
       throw new Error(`No session found for shop ${syncHistory.shop}`);
     }
 
-    const bulkOperation = await fetchBulkOperationDetails(session, bulkOperationId);
+    const bulkOperation = await fetchBulkOperationDetails(
+      session,
+      bulkOperationId
+    );
 
-    if (!bulkOperation) {
-      throw new Error("Failed to retrieve bulk operation details");
-    }
+    if (!bulkOperation) throw new Error("Bulk operation not found");
 
     if (bulkOperation.errorCode) {
       throw new Error(
-        `Bulk operation failed in Shopify. status=${bulkOperation.status} errorCode=${bulkOperation.errorCode}`
+        `Shopify error: ${bulkOperation.errorCode}`
       );
     }
 
     if (bulkOperation.status !== "COMPLETED") {
-      throw new Error(
-        `Bulk operation is not completed yet. status=${bulkOperation.status}`
-      );
+      throw new Error(`Bulk not completed: ${bulkOperation.status}`);
     }
 
-    if (!bulkOperation.url || typeof bulkOperation.url !== "string") {
-      throw new Error(
-        `Bulk operation completed but result URL is missing. status=${bulkOperation.status}`
-      );
+    if (!bulkOperation.url) {
+      throw new Error("Missing result URL");
     }
 
-    const parsedUrl = new URL(bulkOperation.url);
-
-    const urlResponse = await axios.get(parsedUrl.toString(), {
+    const urlResponse = await axios.get(bulkOperation.url, {
       headers: { Accept: "application/json" },
       responseType: "stream",
     });
 
-    if (urlResponse.status !== 200) {
-      throw new Error(`Failed to download bulk result. status=${urlResponse.status}`);
-    }
-
-    if (syncHistory.operationType === "Collection") {
-      await processSyncDataInBatches(urlResponse.data, session.shop, "Collection");
-
-      recordCount = await prisma.collection.count({
-        where: { shop: session.shop },
-      });
-
-      await prisma.store.update({
-        where: { shopUrl: session.shop },
-        data: {
-          isCollectionSyncing: false,
-          lastCollectionSyncAt: new Date(),
-        },
-      });
-
-      await clearKeyCaches(`${session.shop}:sync_details`);
-    }
+    /* ───────────────────────── PRODUCT SYNC ───────────────────────── */
 
     if (syncHistory.operationType === "Product") {
-      await prisma.store.update({
-        where: { shopUrl: session.shop },
-        data: {
-          shopifyBulkJobCompleted: true,
-        },
-      });
-
-      const service = new Services();
-
-      const syncResult = await service.formatAndSyncProductsToDB({
+      const result = await processProductStreamAndInsert({
         dataStream: urlResponse.data,
         shop: session.shop,
-        replaceShopData: true,
       });
 
-      recordCount = syncResult.totalProductsProcessed || 0;
-
-      await clearKeyCaches(`${session.shop}:ProductFetch:`);
-      await clearKeyCaches(`${session.shop}:productTypes:`);
+      recordCount = result.totalProductsProcessed;
 
       await prisma.store.update({
         where: { shopUrl: session.shop },
         data: {
           isProductSyncing: false,
-          lastProductSyncAt: new Date(),
           isProductInitialySyning: false,
-          storeTotalProducts: syncResult.totalProductsProcessed || 0,
+          shopifyBulkJobCompleted: true,
+          lastProductSyncAt: new Date(),
+          storeTotalProducts: result.totalProductsProcessed,
         },
       });
 
       emitToUser(session.shop, "product_sync", {
         message: "Product sync completed",
-        totalProductsProcessed: syncResult.totalProductsProcessed || 0,
-        totalVariantsProcessed: syncResult.totalVariantsProcessed || 0,
+        totalProductsProcessed: result.totalProductsProcessed,
+        totalVariantsProcessed: result.totalVariantsProcessed,
       });
     }
 
+    /* ───────────────────────── COMMON CLEANUP ───────────────────────── */
+
     await clearKeyCaches(`${session.shop}:storeDetails`);
-    await clearKeyCaches(`${session.shop}:ProductFetch`);
     await clearKeyCaches(`${session.shop}:sync_details`);
+    await clearKeyCaches(`${session.shop}:ProductFetch`);
 
-    const createdAt = bulkOperation.createdAt
-      ? new Date(bulkOperation.createdAt)
-      : new Date();
-    const completedAt = bulkOperation.completedAt
-      ? new Date(bulkOperation.completedAt)
-      : new Date();
-
-    const durationMs = Math.max(completedAt.getTime() - createdAt.getTime(), 0);
+    const durationMs =
+      new Date(bulkOperation.completedAt).getTime() -
+      new Date(bulkOperation.createdAt).getTime();
 
     await prisma.syncHistory.update({
       where: { id: syncHistory.id },
       data: {
         status: "completed",
         responseUrl: bulkOperation.url,
-        duration: durationMs,
+        duration: Math.max(durationMs, 0),
         recordCount,
       },
     });
 
-    return { message: "syncing completed" };
+    return { message: "Sync completed" };
   } catch (err) {
     if (syncHistory) {
       await prisma.syncHistory.update({
         where: { id: syncHistory.id },
-        data: {
-          status: "failed",
-        },
+        data: { status: "failed" },
       }).catch(() => {});
     }
 
@@ -172,8 +119,6 @@ export async function handleSyncOperation(bulkOperationId) {
         where: { shopUrl: syncHistory.shop },
         data: {
           isProductSyncing: false,
-          isCollectionSyncing: false,
-          isProductTypeSyncing: false,
           isProductInitialySyning: false,
         },
       }).catch(() => {});
@@ -184,32 +129,28 @@ export async function handleSyncOperation(bulkOperationId) {
 }
 
 /* ────────────────────────────────────────────────────────────── */
-/*  BULK OP METADATA FETCH                                       */
+/*  BULK OP FETCH                                                */
 /* ────────────────────────────────────────────────────────────── */
 
 async function fetchBulkOperationDetails(session, bulkOperationId) {
-  const query = `query GetBulkOperationResults($id: ID!) {
-    node(id: $id) {
-      ... on BulkOperation {
-        id
-        status
-        errorCode
-        url
-        partialDataUrl
-        objectCount
-        rootObjectCount
-        completedAt
-        createdAt
-        fileSize
-        type
-      }
-    }
-  }`;
-
   const client = new shopify.api.clients.Graphql({ session });
+
   const response = await client.query({
     data: {
-      query,
+      query: `
+        query ($id: ID!) {
+          node(id: $id) {
+            ... on BulkOperation {
+              id
+              status
+              errorCode
+              url
+              completedAt
+              createdAt
+            }
+          }
+        }
+      `,
       variables: { id: bulkOperationId },
     },
   });
@@ -218,160 +159,82 @@ async function fetchBulkOperationDetails(session, bulkOperationId) {
 }
 
 /* ────────────────────────────────────────────────────────────── */
-/*  STREAMED COLLECTION / PRODUCT-TYPE SYNC                      */
+/*  STREAM PROCESSOR (REPLACES OLD productFilterService)         */
 /* ────────────────────────────────────────────────────────────── */
 
-export async function processSyncDataInBatches(dataStream, shop, type) {
-  try {
-    const BATCH_SIZE = 100;
-    let batch = [];
+async function processProductStreamAndInsert({ dataStream, shop }) {
+  const BATCH_SIZE = 100;
 
-    // 🔹 Delete existing data first (Collections only)
-    if (type === "Collection") {
-      await prisma.collection.deleteMany({
-        where: { shop },
-      });
-    }
+  let productRows = [];
+  let variantRows = [];
 
-    const insertBatch = async () => {
-      if (batch.length === 0) return;
+  let totalProductsProcessed = 0;
+  let totalVariantsProcessed = 0;
 
-      if (type === "Collection") {
-        const seen = new Set();
-        const uniqueCollections = batch.filter((c) => {
-          if (!c.title) return false;
-          const key = c.title.trim().toLowerCase();
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-
-        // Mongo version used updateOne + upsert on { shop, title }.
-        // In Prisma schema, we only have unique id, so we emulate upsert
-        // with findFirst + update/create.
-        for (const col of uniqueCollections) {
-          const existing = await prisma.collection.findFirst({
-            where: {
-              shop,
-              title: col.title,
-            },
-          });
-
-          if (existing) {
-            await prisma.collection.update({
-              where: { id: existing.id },
-              data: {
-                shop,
-                shopifyId: col.shopifyId,
-                title: col.title,
-                // keep handle as-is or null; adjust if you start syncing handle
-                handle: existing.handle ?? null,
-                updatedAt: new Date(),
-              },
-            });
-          } else {
-            await prisma.collection.create({
-              data: {
-                shop,
-                shopifyId: col.shopifyId,
-                title: col.title,
-                handle: null,
-              },
-            });
-          }
-        }
-      }
-
-      batch = [];
-    };
-
-    const rl = readline.createInterface({
-      input: dataStream,
-      crlfDelay: Infinity,
-    });
-
-    rl.on("line", async (line) => {
-      if (!line.trim()) return;
-
-      try {
-        const json = JSON.parse(line);
-
-        if (type === "Product Type" && json.productType) {
-          // You don't yet have a ProductType model in Prisma schema,
-          // so we just accumulate or you can hook this up later.
-          batch.push(json.productType);
-        } else if (type === "Collection") {
-          batch.push({
-            shopifyId: json.id,
-            title: json.title?.trim(),
-            shop,
-          });
-        }
-
-        if (batch.length >= BATCH_SIZE) {
-          rl.pause();
-          await insertBatch();
-          rl.resume();
-        }
-      } catch (err) {
-        const syncFieldName =
-          type === "Product Type"
-            ? "isProductTypeSyncing"
-            : type === "Collection"
-              ? "isCollectionSyncing"
-              : "isProductSyncing";
-
-        // Set the appropriate boolean sync flag to false on Store
-        try {
-          await prisma.store.update({
-            where: { shopUrl: shop },
-            data: {
-              [syncFieldName]: false,
-            },
-          });
-        } catch (e) {
-          // If store not found, just swallow; this is an error-path anyway
-          console.error(
-            `Failed to flip sync flag ${syncFieldName} for shop ${shop}:`,
-            e.message,
-          );
-        }
-      }
-    });
-
-    return new Promise((resolve, reject) => {
-      rl.on("close", async () => {
-        try {
-          await insertBatch(); // insert remaining items
-          resolve();
-        } catch (err) {
-          reject(err);
-        }
-      });
-
-      rl.on("error", reject);
-    });
-  } catch (err) {
-    throw err;
-  }
-}
-
-/* ────────────────────────────────────────────────────────────── */
-/*  PRODUCT-TYPE SYNC FIELDS UPDATE (Prisma)                     */
-/* ────────────────────────────────────────────────────────────── */
-
-async function updateSyncFields(shop, bulkOperation, recordCount) {
-  const result = await prisma.store.update({
-    where: { shopUrl: shop },
-    data: {
-      isProductTypeSyncing: false,
-      lastProductTypeSyncAt: new Date(),
-    },
+  const rl = readline.createInterface({
+    input: dataStream,
+    crlfDelay: Infinity,
   });
 
-  if (!result) {
-    throw new Error("Store document not found");
+  const flush = async () => {
+    if (!productRows.length && !variantRows.length) return;
+
+    await prisma.$transaction([
+      prisma.product.createMany({
+        data: productRows,
+        skipDuplicates: true,
+      }),
+      prisma.variant.createMany({
+        data: variantRows,
+        skipDuplicates: true,
+      }),
+    ]);
+
+    productRows = [];
+    variantRows = [];
+  };
+
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+
+    const json = JSON.parse(line);
+
+    if (json.__typename === "Product") {
+      productRows.push({
+        id: json.id,
+        shop,
+        title: json.title,
+        productType: json.productType,
+        vendor: json.vendor,
+        status: json.status,
+      });
+
+      totalProductsProcessed++;
+    }
+
+    if (json.__typename === "ProductVariant") {
+      variantRows.push({
+        id: json.id,
+        shop,
+        productId: json.product?.id,
+        price: json.price,
+      });
+
+      totalVariantsProcessed++;
+    }
+
+    if (
+      productRows.length >= BATCH_SIZE ||
+      variantRows.length >= BATCH_SIZE
+    ) {
+      await flush();
+    }
   }
 
-  await CacheService.del(`${shop}:storeDetails`);
+  await flush();
+
+  return {
+    totalProductsProcessed,
+    totalVariantsProcessed,
+  };
 }

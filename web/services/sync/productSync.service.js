@@ -1,75 +1,82 @@
-import { Services } from "../../services/productService/productFilterService.js";
+import shopify from "../../shopify.js";
 import { clearKeyCaches } from "../../utils/cacheUtils.js";
-import { cacheKeys } from "../../cache/cacheKeys.js";
-import { storeRepository } from "../../repositories/store.repository.js";
-import { syncHistoryRepository } from "../../repositories/syncHistory.repository.js";
-import { productRepository } from "../../repositories/product.repository.js";
+import { syncRepository } from "../../repositories/sync.repository.js";
 
-const legacyProductService = new Services();
-
-function normalizeShop(shop) {
-  return String(shop ?? "").trim();
-}
-
-function normalizeForce(force) {
-  if (typeof force === "boolean") {
-    return force;
-  }
-
-  return String(force ?? "").trim().toLowerCase() === "true";
+function createHttpError(statusCode, message) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
 }
 
 export class ProductSyncService {
-  async startProductSync({ session, force }) {
-    const shop = normalizeShop(session?.shop);
-    const normalizedForce = normalizeForce(force);
-
-    const [store, productCount, latestCompletedSync] = await Promise.all([
-      storeRepository.getSyncGateSnapshot(shop),
-      productRepository.countByWhere({ shop }),
-      syncHistoryRepository.getLatestCompletedProductSync(shop),
-    ]);
-
-    const alreadySynced =
-      !!store &&
-      store.isProductSyncing === false &&
-      store.isProductInitialySyning === false &&
-      store.shopifyBulkJobCompleted === true &&
-      productCount > 0;
-
-    if (alreadySynced && !normalizedForce) {
-      return {
-        skipped: true,
-        forced: false,
-        response: {
-          message: "Products already synced. Skipping new sync.",
-          skipped: true,
-          forceAllowed: true,
-          data: {
-            productCount,
-            storeTotalProducts: store.storeTotalProducts,
-            lastProductSyncAt: store.lastProductSyncAt,
-            lastCompletedSyncAt: latestCompletedSync?.updatedAt || null,
-            lastCompletedRecordCount: latestCompletedSync?.recordCount || null,
-          },
-        },
-      };
+  async startBulkOperationToFetchProducts({ session, isInitialSync = false }) {
+    if (!session?.shop) {
+      throw createHttpError(401, "Invalid shop session");
     }
 
-    const result = await legacyProductService.startBulkOperationToFetchProducts({
-      session,
+    const client = new shopify.api.clients.Graphql({ session });
+
+    const query = `
+      mutation {
+        bulkOperationRunQuery(
+          query: """
+          {
+            products {
+              edges {
+                node {
+                  id
+                }
+              }
+            }
+          }
+          """
+        ) {
+          bulkOperation {
+            id
+            status
+          }
+          userErrors {
+            message
+          }
+        }
+      }
+    `;
+
+    const response = await client.query({ data: query });
+
+    const errors = response?.body?.errors;
+    if (errors?.length) {
+      throw createHttpError(500, errors[0].message);
+    }
+
+    const result = response?.body?.data?.bulkOperationRunQuery;
+
+    if (result?.userErrors?.length) {
+      throw createHttpError(400, JSON.stringify(result.userErrors));
+    }
+
+    if (!result?.bulkOperation?.id) {
+      throw createHttpError(500, "Bulk operation failed");
+    }
+
+    await syncRepository.markProductSyncing({
+      shopUrl: session.shop,
+      lastProductSyncAt: new Date(),
     });
 
-    await clearKeyCaches(cacheKeys.syncDetails(shop));
+    await clearKeyCaches(`${session.shop}:sync_details`);
+
+    await syncRepository.createSyncHistory({
+      shop: session.shop,
+      bulkOperationId: result.bulkOperation.id,
+      status: "processing",
+      operationType: "Product",
+      isInitialProductSync: isInitialSync,
+    });
 
     return {
-      skipped: false,
-      forced: normalizedForce,
-      response: {
-        ...result,
-        skipped: false,
-        forced: normalizedForce,
-      },
+      message: "Bulk product sync started",
+      bulkOperationId: result.bulkOperation.id,
     };
   }
 }

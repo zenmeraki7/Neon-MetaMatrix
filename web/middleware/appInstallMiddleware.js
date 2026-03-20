@@ -10,7 +10,7 @@ import { generateReferralCode } from "../utils/referralUtils.js";
 import { getShopOwnerEmailAddress } from "../utils/sessionHandler.js";
 import { clearKeyCaches } from "../utils/cacheUtils.js";
 import shopify from "../shopify.js";
-import { Services } from "../services/productService/productFilterService.js";
+import { productSyncService } from "../services/sync/productSync.service.js";
 import { logApiError } from "../utils/errorLogUtils.js";
 
 import { prisma } from "../config/database.js";
@@ -190,11 +190,10 @@ export const appInstallMiddleware = async (req, res, next) => {
     const count = response?.data?.productsCount?.count || 0;
 
     // 4️⃣ Start bulk product sync (CRITICAL)
-    const service = new Services();
-    await service.startBulkOperationToFetchProducts({
-      session,
-      isInitialSync: true,
-    });
+   await productSyncService.startBulkOperationToFetchProducts({
+  session,
+  isInitialSync: true,
+});
 
     // 5️⃣ Update sync flags
     await prisma.store.update({

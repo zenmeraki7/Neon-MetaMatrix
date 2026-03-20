@@ -1,7 +1,7 @@
 // controllers/filterCombinationController/filterCombinationController.js
-import { title } from "errorhandler";
 import FilterCombination from "../schema/FilterCombinationSchema.js";
-import { Services } from "../services/productService/productFilterService.js";
+// import { Services } from "../services/productService/productFilterService.js";
+import { buildProductPrismaWhere } from "../services/product/productFilterCompiler.service.js";
 
 // ✅ Add new filter combination
 export const addFilterCombination = async (req, res) => {
@@ -21,21 +21,15 @@ export const addFilterCombination = async (req, res) => {
         .json({ error: "Maximum of 10 filter combinations allowed" });
     }
 
-    const productService = new Services(session);
+   const where = buildProductPrismaWhere(filterParams, shop);
 
-    const { filterTitles, filterDescriptions } =
-      await productService.buildProductFilters(filterParams, {
-        includeDescriptions: true,
-        includeTitles: true,
-      });
-
-    const payload = {
-      filters: filterParams,
-      shop,
-      customTitle,
-      title: filterTitles,
-      description: filterDescriptions,
-    };
+const payload = {
+  filters: filterParams,
+  shop,
+  customTitle,
+  title: customTitle, // since old auto-title removed
+  description: JSON.stringify(where), // optional debug
+};
 
     const saved = await FilterCombination.create(payload);
 
