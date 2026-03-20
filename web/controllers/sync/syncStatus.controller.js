@@ -1,5 +1,5 @@
 import { logApiError } from "../../utils/errorLogUtils.js";
-import { getShopSession } from "../../services/shared/session.service.js";
+import { getShopifySession } from "../../services/shared/session.service.js";
 import { syncStatusService } from "../../services/sync/syncStatus.service.js";
 
 function normalizeShop(shop) {
@@ -26,7 +26,7 @@ function getDefaultErrorPayload(error) {
 }
 
 export const getSyncStatus = async (req, res) => {
-  const session = getShopSession(res);
+const session = getShopifySession(res);
   const shop = normalizeShop(session?.shop || req?.query?.shop);
 
   try {

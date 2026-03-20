@@ -57,6 +57,8 @@ export const getProductsWithQuery = async (req, res) => {
   try {
     session = assertShopSession(res);
 
+    
+
     const result = await productQueryService.getProductsWithQuery({
       shop: session.shop,
       queryParams: req.query || {},

@@ -1,26 +1,22 @@
 // ============================================
-// Jobs/Workers/productSyncWorker.js
+// Jobs/Workers/productSyncWorker.js (FINAL CLEAN)
 // ============================================
+
 import { Worker } from "bullmq";
 import { connection } from "../../Config/redis.js";
-import { Services } from "../../services/productService/productFilterService.js";
+
+import { productSyncService } from "../../services/sync/productSync.service.js";
 import { getCurrentBulkOperationStatus } from "../../utils/bulkOperationHelper.js";
 import { productSyncQueue } from "../Queues/productSyncQueue.js";
 
-// 🔹 Use the shared Prisma client (Neon / Postgres)
 import { prisma } from "../../config/database.js";
-
-// 🔹 Use the same Shopify app instance that is configured
-//     with PostgreSQLSessionStorage (DATABASE_URL)
 import shopify from "../../shopify.js";
 
 import dotenv from "dotenv";
 dotenv.config();
 
-const service = new Services();
-
 // ============================================
-// SYNC ALL STORES IN BATCHES (Prisma version)
+// SYNC ALL STORES IN BATCHES
 // ============================================
 async function syncAllStoresBatched() {
   const batchSize = 20;
@@ -28,18 +24,9 @@ async function syncAllStoresBatched() {
 
   while (true) {
     const stores = await prisma.store.findMany({
-      where: {
-        // Mongo: $or: [{ isUnInstalled: false }, { isUnInstalled: { $exists: false } }]
-        // Prisma: default false, so just filter isUnInstalled === false
-        isUnInstalled: false,
-      },
-      select: {
-        id: true,
-        shopUrl: true,
-      },
-      orderBy: {
-        id: "asc",
-      },
+      where: { isUnInstalled: false },
+      select: { id: true, shopUrl: true },
+      orderBy: { id: "asc" },
       take: batchSize,
       ...(lastId && {
         cursor: { id: lastId },
@@ -66,18 +53,13 @@ export const productSyncWorker = new Worker(
     const { shopUrl, type } = job.data;
 
     try {
-      // Handle scheduler jobs (cron triggers)
       if (type === "auto-sync") {
         await handleAutoSync();
       } else if (type === "priority-sync") {
         await handlePrioritySync();
-      }
-      // Handle individual store sync jobs
-      else if (shopUrl) {
+      } else if (shopUrl) {
         await syncStore(shopUrl);
-      }
-      // Backward compatibility - sync all stores
-      else {
+      } else {
         await syncAllStoresBatched();
       }
     } catch (error) {
@@ -96,7 +78,7 @@ export const productSyncWorker = new Worker(
 );
 
 // ============================================
-// AUTO SYNC HANDLER - Every 6 hours (Prisma)
+// AUTO SYNC (6 HOURS)
 // ============================================
 async function handleAutoSync() {
   const now = new Date();
@@ -110,25 +92,19 @@ async function handleAutoSync() {
         { lastProductSyncAt: null },
       ],
     },
-    select: {
-      shopUrl: true,
-    },
-    orderBy: {
-      lastProductSyncAt: "asc",
-    },
+    select: { shopUrl: true },
+    orderBy: { lastProductSyncAt: "asc" },
     take: 10,
   });
 
-  // Queue individual store syncs with staggered delays
   for (let i = 0; i < storesToSync.length; i++) {
     const store = storesToSync[i];
-    const delayMs = i * 30_000; // 30-second delay between stores
 
     await productSyncQueue.add(
       "auto-sync-job",
       { shopUrl: store.shopUrl },
       {
-        delay: delayMs,
+        delay: i * 30000,
         jobId: `sync-${store.shopUrl}-${Date.now()}`,
       },
     );
@@ -136,7 +112,7 @@ async function handleAutoSync() {
 }
 
 // ============================================
-// PRIORITY SYNC HANDLER - Every 2 hours (Prisma)
+// PRIORITY SYNC (2 HOURS)
 // ============================================
 async function handlePrioritySync() {
   const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
@@ -145,15 +121,9 @@ async function handlePrioritySync() {
     where: {
       isUnInstalled: false,
       lastProductSyncAt: { lt: twoHoursAgo },
-      OR: [
-        { lastActivityAt: { gt: twoHoursAgo } },
-        // If you later add `isPremium` Boolean to Store model:
-        // { isPremium: true },
-      ],
+      OR: [{ lastActivityAt: { gt: twoHoursAgo } }],
     },
-    select: {
-      shopUrl: true,
-    },
+    select: { shopUrl: true },
     take: 5,
   });
 
@@ -170,49 +140,99 @@ async function handlePrioritySync() {
 }
 
 // ============================================
-// SYNC INDIVIDUAL STORE
+// SYNC SINGLE STORE (FIXED)
 // ============================================
 async function syncStore(shopUrl) {
   try {
     const session = await restoreSession(shopUrl);
+
     if (!session) {
-      console.warn(`⚠️ No offline session found for shop ${shopUrl}, skipping sync`);
+      console.warn(`⚠️ No session for ${shopUrl}`);
       return;
     }
 
+    // 🔹 check if already running
     const { status } = await getCurrentBulkOperationStatus(session, "QUERY");
+
     if (status === "RUNNING") {
-      // Bulk operation already running, don't start another
+      console.log(`⏳ Bulk already running for ${shopUrl}`);
       return;
     }
 
-    await service.startBulkOperationToFetchProducts({ session });
+    // 🔹 get latest bulk operation ID
+    const bulkOperation = await getCurrentBulkOperationStatus(session, "QUERY");
+
+    if (!bulkOperation?.id) {
+      console.warn("⚠️ No bulk operation found");
+      return;
+    }
+
+    // 🔹 fetch bulk details
+    const client = new shopify.api.clients.Graphql({ session });
+
+    const response = await client.query({
+      data: {
+        query: `
+          query ($id: ID!) {
+            node(id: $id) {
+              ... on BulkOperation {
+                id
+                status
+                url
+              }
+            }
+          }
+        `,
+        variables: { id: bulkOperation.id },
+      },
+    });
+
+    const node = response?.body?.data?.node;
+
+    if (!node?.url) {
+      console.warn("⚠️ No bulk URL yet");
+      return;
+    }
+
+    console.log("🔥 BULK URL:", node.url);
+
+    // 🔹 download JSONL file
+    const axios = (await import("axios")).default;
+
+    const streamResponse = await axios.get(node.url, {
+      responseType: "stream",
+    });
+
+    // 🔥 THIS IS THE FIX
+    await productSyncService.formatAndSyncProductsToDB({
+      dataStream: streamResponse.data,
+      shop: session.shop,
+    });
+
+    console.log(`✅ Sync completed for ${shopUrl}`);
+
   } catch (error) {
     console.error(`❌ Error syncing ${shopUrl}:`, error?.message || error);
   }
 }
 
 // ============================================
-// RESTORE SESSION – from PostgreSQLSessionStorage
+// RESTORE SESSION
 // ============================================
 async function restoreSession(shop) {
   try {
     const sessionId = `offline_${shop}`;
     const session = await shopify.config.sessionStorage.loadSession(sessionId);
 
-    if (!session) {
-      return null;
-    }
-
-    return session;
+    return session || null;
   } catch (err) {
-    console.error("❌ Error restoring session for", shop, ":", err?.message || err);
+    console.error("❌ Session restore error:", err?.message || err);
     return null;
   }
 }
 
 // ============================================
-// WORKER EVENT HANDLERS
+// EVENTS
 // ============================================
 productSyncWorker.on("completed", (job) => {
   console.log(`✅ Job ${job.id} completed`);

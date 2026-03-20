@@ -1,11 +1,10 @@
-import { Services } from "../../services/productService/productFilterService.js";
+import { buildProductPrismaWhere } from "../../services/product/productFilterCompiler.service.js";
 import { ProductExportService } from "../../services/productService/productExportService.js";
 import { addbulkExportJob } from "../../Jobs/Queues/bulkExportJob.js";
 import { exportRepository } from "../../repositories/export.repository.js";
 import { clearKeyCaches } from "../../utils/cacheUtils.js";
 import { cacheKeys } from "../../cache/cacheKeys.js";
 
-const filterService = new Services();
 
 function normalizeShop(shop) {
   return String(shop ?? "").trim();
@@ -75,10 +74,8 @@ export class ExportService {
       throw error;
     }
 
-    const where = filterService.getProductPrismaWhere(
-      filterParams ?? {},
-      normalizedShop,
-    );
+
+const where = buildProductPrismaWhere(filterParams ?? {}, normalizedShop);
 
     const job = await exportRepository.createExportJob({
       shop: normalizedShop,

@@ -1,15 +1,9 @@
 import { logApiError } from "../../utils/errorLogUtils.js";
 import { assertShopSession } from "../../services/shared/session.service.js";
 import { assertNoRunningBulkOperation } from "../../services/shared/bulkOperationGuard.service.js";
-import { productSyncService } from "../../services/sync/productSync.service.js";
 
-function parseForceFlag(req) {
-  return (
-    String(req?.query?.force ?? req?.body?.force ?? "")
-      .trim()
-      .toLowerCase() === "true"
-  );
-}
+// ✅ FIXED IMPORT
+import { productSyncService } from "../../services/sync/productSync.service.js";
 
 function getErrorStatusCode(error) {
   const statusCode = Number(error?.statusCode);
@@ -26,14 +20,15 @@ export const syncProductData = async (req, res) => {
 
   try {
     session = assertShopSession(res);
+
     await assertNoRunningBulkOperation(session, "QUERY");
 
-    const result = await productSyncService.startProductSync({
+    // ✅ FIXED FUNCTION NAME
+    const result = await productSyncService.startBulkOperationToFetchProducts({
       session,
-      force: parseForceFlag(req),
     });
 
-    return res.status(200).json(result.response);
+    return res.status(200).json(result);
   } catch (error) {
     await logApiError({
       shop: session?.shop,

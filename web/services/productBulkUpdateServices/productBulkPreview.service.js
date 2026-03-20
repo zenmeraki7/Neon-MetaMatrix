@@ -1,4 +1,4 @@
-import { Services } from "../../services/productService/productFilterService.js";
+import { buildProductPrismaWhere } from "../../services/product/productFilterCompiler.service.js";
 import { getUpdatedProducts } from "../../helpers/productBulkOperationHelpers/productUpdateHandler.js";
 import { FIELD_TRANSLATIONS } from "../../Config/constants.js";
 import { FIELD_CONFIGS } from "../../helpers/productBulkOperationHelpers/constants.js";
@@ -36,7 +36,6 @@ function buildProductInclude(field) {
   if (isVariantLevelField(field) || OPTION_NAME_FIELDS.has(field)) {
     return { variants: true };
   }
-
   return undefined;
 }
 
@@ -56,7 +55,6 @@ export class ProductBulkPreviewService {
   constructor(session, repository) {
     this.session = session;
     this.repository = repository;
-    this.filterService = new Services();
   }
 
   async trackEditProducts({
@@ -75,8 +73,9 @@ export class ProductBulkPreviewService {
     const changes = [];
     const isVariant = isVariantLevelField(field);
 
-    const where = this.filterService.getProductPrismaWhere(
-      filterParams,
+    // ✅ NEW FILTER SYSTEM
+    const where = buildProductPrismaWhere(
+      filterParams ?? [],
       this.session.shop,
     );
 
@@ -104,13 +103,13 @@ export class ProductBulkPreviewService {
       if (count > productLimit) {
         subscriptionWarning = {
           type: "LIMIT_EXCEEDED",
-          message: `Your current plan (${planName}) allows editing up to ${productLimit} products. You're trying to edit ${count} products. Please upgrade your plan or reduce the number of products.`,
+          message: `Your current plan (${planName}) allows editing up to ${productLimit} products. You're trying to edit ${count} products.`,
         };
       } else if (count > productLimit * 0.8) {
         const remaining = productLimit - count;
         subscriptionWarning = {
           type: "APPROACHING_LIMIT",
-          message: `You're editing ${count} products. Your plan allows ${productLimit} products per edit. ${remaining} products remaining.`,
+          message: `You're editing ${count} products. ${remaining} remaining.`,
         };
       }
     }

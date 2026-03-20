@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { Services } from "../../services/productService/productFilterService.js";
+import { buildProductPrismaWhere } from "../../services/product/productFilterCompiler.service.js";
 import { createMultiLanguage } from "../../utils/googleTranslator.js";
 import { getUpdatedProducts } from "../../helpers/productBulkOperationHelpers/productUpdateHandler.js";
 import { FIELD_CONFIGS } from "../../helpers/productBulkOperationHelpers/constants.js";
@@ -37,7 +37,6 @@ function buildProductInclude(field) {
   if (isVariantLevelField(field) || OPTION_NAME_FIELDS.has(field)) {
     return { variants: true };
   }
-
   return undefined;
 }
 
@@ -66,7 +65,6 @@ export class ProductBulkPlannerService {
   constructor(session, repository) {
     this.session = session;
     this.repository = repository;
-    this.filterService = new Services();
   }
 
   async buildBulkEditHistoryPayload(body, subscription = {}) {
@@ -85,8 +83,9 @@ export class ProductBulkPlannerService {
       throw new Error("Location ID is required for inventory edits");
     }
 
-    const where = this.filterService.getProductPrismaWhere(
-      filterParams,
+    // ✅ NEW FILTER LOGIC
+    const where = buildProductPrismaWhere(
+      filterParams ?? [],
       this.session.shop,
     );
 

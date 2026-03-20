@@ -1,14 +1,23 @@
-import { Services } from "../../services/productService/productFilterService.js";
+// ============================================
+// productBulkEditPreview.service.js (FINAL CLEAN)
+// ============================================
+
+import { buildProductPrismaWhere } from "../product/productFilterCompiler.service.js"; // ✅ NEW
+
 import { FIELD_TRANSLATIONS } from "../../Config/constants.js";
 import { getUpdatedProducts } from "../../helpers/productBulkOperationHelpers/productUpdateHandler.js";
 import { productRepository } from "../../repositories/product.repository.js";
+
 import {
   buildProductInclude,
   isVariantLevelField,
 } from "../../domain/productFields/fieldMeta.js";
+
 import { buildBulkEditSubscriptionWarning } from "../subscription/subscriptionGuard.service.js";
 
-const filterService = new Services();
+// ============================================
+// HELPERS
+// ============================================
 
 function normalizeShop(shop) {
   return String(shop ?? "").trim();
@@ -43,6 +52,10 @@ function normalizePreviewProduct(rawProduct) {
   };
 }
 
+// ============================================
+// PREVIEW BULK EDIT
+// ============================================
+
 export async function previewBulkEditProducts({
   shop,
   field,
@@ -60,16 +73,20 @@ export async function previewBulkEditProducts({
   const normalizedShop = normalizeShop(shop);
   const normalizedField = normalizeString(field);
   const normalizedLang = normalizeString(lang);
+
   const currentPage = normalizePositiveInt(page, 1, 100000);
   const perPage = normalizePositiveInt(limit, 20, 100);
   const skip = (currentPage - 1) * perPage;
 
   const changes = [];
   const isVariant = isVariantLevelField(normalizedField);
-  const where = filterService.getProductPrismaWhere(
-    filterParams ?? {},
+
+  // ✅ NEW FILTER BUILDER
+  const where = buildProductPrismaWhere(
+    filterParams ?? [],
     normalizedShop,
   );
+
   const include = buildProductInclude(normalizedField);
 
   const [products, count] = await Promise.all([
@@ -113,7 +130,9 @@ export async function previewBulkEditProducts({
     message: "tracking successful",
     data: {
       preview,
-      field: FIELD_TRANSLATIONS?.[normalizedField]?.[normalizedLang] || normalizedField,
+      field:
+        FIELD_TRANSLATIONS?.[normalizedField]?.[normalizedLang] ||
+        normalizedField,
       isVariant,
       pagination: {
         total: count,
@@ -124,6 +143,8 @@ export async function previewBulkEditProducts({
         hasPrevPage: currentPage > 1,
       },
     },
-    subscription: subscriptionWarning ? { warning: subscriptionWarning } : {},
+    subscription: subscriptionWarning
+      ? { warning: subscriptionWarning }
+      : {},
   };
 }

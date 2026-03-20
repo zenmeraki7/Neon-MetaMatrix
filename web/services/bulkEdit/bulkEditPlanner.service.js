@@ -1,14 +1,23 @@
-import { Services } from "../../services/productService/productFilterService.js";
+// ============================================
+// productBulkEdit.service.js (FINAL CLEAN)
+// ============================================
+
+import { buildProductPrismaWhere } from "../product/productFilterCompiler.service.js"; // ✅ NEW
+
 import { getUpdatedProducts } from "../../helpers/productBulkOperationHelpers/productUpdateHandler.js";
 import { createMultiLanguage } from "../../utils/googleTranslator.js";
 import { clearKeyCaches } from "../../utils/cacheUtils.js";
+
 import { editHistoryRepository } from "../../repositories/editHistory.repository.js";
 import { productRepository } from "../../repositories/product.repository.js";
+
 import { enforceBulkEditLimit } from "../subscription/subscriptionGuard.service.js";
 import { addbulkEditJob } from "../../Jobs/Queues/bulkEditJob.js";
 import { cacheKeys } from "../../cache/cacheKeys.js";
 
-const filterService = new Services();
+// ============================================
+// HELPERS
+// ============================================
 
 function normalizeShop(shop) {
   return String(shop ?? "").trim();
@@ -17,6 +26,10 @@ function normalizeShop(shop) {
 function normalizeString(value) {
   return String(value ?? "").trim();
 }
+
+// ============================================
+// BUILD HISTORY PAYLOAD
+// ============================================
 
 export async function buildBulkEditHistoryPayload({
   body,
@@ -40,23 +53,28 @@ export async function buildBulkEditHistoryPayload({
   const normalizedEditedField = normalizeString(editedField);
   const normalizedLocationId = normalizeString(locationId);
 
+  // 🔴 Validation
   if (normalizedEditedField === "inventory" && !normalizedLocationId) {
     const error = new Error("Location ID is required for inventory edits");
     error.statusCode = 400;
     throw error;
   }
 
-  const where = filterService.getProductPrismaWhere(
-    filterParams ?? {},
+  // ✅ NEW FILTER BUILDER
+  const where = buildProductPrismaWhere(
+    filterParams ?? [],
     normalizedShop,
   );
+
   const count = await productRepository.countByWhere(where);
 
+  // 🔒 Plan limit check
   enforceBulkEditLimit({
     count,
     subscription,
   });
 
+  // 🧠 Title builder
   const updatedTitle = getUpdatedProducts({
     field: normalizedEditedField,
     editType: editedType,
@@ -88,14 +106,20 @@ export async function buildBulkEditHistoryPayload({
     processedCount: 0,
     totalItems: count,
     durationMs: 0,
+
     ...(normalizedEditedField === "inventory"
       ? { locationId: normalizedLocationId }
       : {}),
+
     undo: {
       allowed: normalizedEditedField !== "deleteProducts",
     },
   };
 }
+
+// ============================================
+// CREATE HISTORY + QUEUE
+// ============================================
 
 export async function createBulkEditHistoryAndQueue({
   body,
@@ -115,8 +139,10 @@ export async function createBulkEditHistoryAndQueue({
     historyPayload,
   );
 
+  // 🧹 Cache clear
   await clearKeyCaches(cacheKeys.histories(normalizedShop));
 
+  // 🚀 Queue job
   await addbulkEditJob({
     historyId: history.id,
     session,
