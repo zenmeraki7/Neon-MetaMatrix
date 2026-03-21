@@ -202,45 +202,52 @@ export default function EditPreviewPage() {
   // =========================
   // RUN BULK EDIT
   // =========================
-  const handleRunEdit = async () => {
-    if (submitError) {
-      toast.error(submitError);
-      return;
-    }
+ const handleRunEdit = async () => {
+  if (submitting) return; // ✅ HARD BLOCK
 
-    if (
-      editType?.inputType === InputType.SEARCH_REPLACE &&
-      !searchReplace.search
-    ) {
-      toast.error("Please enter a search value");
-      return;
-    }
+  if (submitError) {
+    toast.error(submitError);
+    return;
+  }
 
-    if (!editType || !canRunEdit) return;
+  if (
+    editType?.inputType === InputType.SEARCH_REPLACE &&
+    !searchReplace.search
+  ) {
+    toast.error("Please enter a search value");
+    return;
+  }
 
-    setSubmitting(true);
-    setLimitWarning(null);
+  if (!editType || !canRunEdit) return;
 
-    try {
-      const res = await fetch(`/api/products/update?lang=${i18n.language}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          editedField: selectedField.value,
-          editedType: editType.value,
-          value: debouncedValue,
-          searchKey: debouncedSearchReplace.search,
-          replaceText: debouncedSearchReplace.replace,
-          location: locationValue,
-          filterParams: filters,
-          supportValue,
-        }),
-      });
+  setSubmitting(true);
+  setLimitWarning(null);
 
-      const json = await res.json();
- if (!res.ok) {
-      if (res.status === 400 && json.message?.toLowerCase().includes('plan')) {
-        // Show both toast and banner
+  try {
+    const res = await fetch(`/api/products/update?lang=${i18n.language}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        editedField: selectedField.value,
+        editedType: editType.value,
+        value: debouncedValue,
+        searchKey: debouncedSearchReplace.search,
+        replaceText: debouncedSearchReplace.replace,
+        location: locationValue,
+        filterParams: filters,
+        supportValue,
+      }),
+    });
+
+    const json = await res.json();
+
+    if (!res.ok) {
+      if (res.status === 409) {
+        toast.error("Another bulk edit is already running. Please wait.");
+        return;
+      }
+
+      if (res.status === 400 && json.message?.toLowerCase().includes("plan")) {
         setLimitWarning(json.message);
         toast.error(json.message, { duration: 6000 });
       } else {
@@ -249,15 +256,15 @@ export default function EditPreviewPage() {
       return;
     }
 
-      toast.success("Bulk edit started");
-      navigate("/editDetails/" + json.id);
+    toast.success("Bulk edit started");
+    navigate("/editDetails/" + json.id);
 
-    } catch (err) {
-      toast.error(err.message || "Failed to update products");
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  } catch (err) {
+    toast.error(err.message || "Failed to update products");
+  } finally {
+    setSubmitting(false);
+  }
+};
 
   // =========================
   // RENDER

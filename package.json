@@ -13,6 +13,7 @@
     "start": "cd web && npm start",
     "dev": "shopify app dev",
     "info": "shopify app info",
+    "worker:export": "node web/Jobs/Workers/bulkExportWorker.js",
     "generate": "shopify app generate",
     "deploy": "shopify app deploy"
   },

@@ -28,14 +28,25 @@ const ExportTable = ({ onExportSuccess, onExportError }) => {
     const fetchHistories = async () => {
       try {
         setHistoryLoading(true);
-        const res = await fetch("/api/history/get-shop-exporthistory?");
-        const data = await res.json();
+        const res = await fetch("/api/history/get-shop-exporthistory");
 
-        if (!res.ok || !data.success) {
-          throw new Error(data.message || "Failed to fetch export history");
+        let data = {};
+
+        try {
+          data = await res.json();
+        } catch {
+          throw new Error("Invalid server response");
         }
 
-        setHistories(data.data || []);
+        if (!res.ok) {
+          throw new Error(data?.message || "Failed to fetch export history");
+        }
+
+        if (!data?.success) {
+          throw new Error(data?.message || "Export history fetch failed");
+        }
+
+        setHistories(Array.isArray(data?.data) ? data.data : []);
       } catch (error) {
         setHistoryError(error);
       } finally {
@@ -63,25 +74,31 @@ const ExportTable = ({ onExportSuccess, onExportError }) => {
     }
   };
 
-  const handleDownloadClick = async (id, fileUrl, filename) => {
-    if (!fileUrl) {
-      onExportError?.("Download link not available.");
-      return;
-    }
-
+  const handleDownloadClick = async (id, _fileUrl, filename) => {
     setDownloadingItems((prev) => new Set(prev).add(id));
 
     try {
+      const res = await fetch(`/api/products/download-export/${id}`);
+
+      if (!res.ok) {
+        throw new Error("Download failed");
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+
       const link = document.createElement("a");
-      link.href = fileUrl;
+      link.href = url;
       link.download = filename || "export.csv";
-      link.target = "_blank";
+
       document.body.appendChild(link);
       link.click();
       link.remove();
 
+      window.URL.revokeObjectURL(url);
+
       onExportSuccess?.();
-    } catch (error) {
+    } catch (err) {
       onExportError?.("Failed to download file.");
     } finally {
       setDownloadingItems((prev) => {
@@ -126,26 +143,17 @@ const ExportTable = ({ onExportSuccess, onExportError }) => {
 
   const historyRowMarkup = useMemo(() => {
     return histories.map((item, index) => {
-      const {
-        _id,
-        filename,
-        status,
-        type,
-        completedAt,
-        createdAt,
-        fileUrl,
-      } = item;
+      const { id, filename, status, type, completedAt, createdAt, fileUrl } =
+        item;
 
-      const isDownloading = downloadingItems.has(_id);
+      const isDownloading = downloadingItems.has(id);
 
-      const isDownloadable =
-        status?.toLowerCase() === "completed" && !!fileUrl;
+      const isDownloadable = status?.toLowerCase() === "completed";
 
-      const progress =
-        status?.toLowerCase() === "completed" ? 100 : 0;
+      const progress = status?.toLowerCase() === "completed" ? 100 : 0;
 
       return (
-        <IndexTable.Row id={_id} key={_id} position={index}>
+        <IndexTable.Row id={id} key={id} position={index}>
           <IndexTable.Cell>
             <Text variant="bodyMd" as="span" fontWeight="semibold">
               {filename || "Untitled Export"}
@@ -158,9 +166,7 @@ const ExportTable = ({ onExportSuccess, onExportError }) => {
                 progress={progress}
                 size="small"
                 tone={
-                  status?.toLowerCase() === "failed"
-                    ? "critical"
-                    : "highlight"
+                  status?.toLowerCase() === "failed" ? "critical" : "highlight"
                 }
               />
             </div>
@@ -188,9 +194,7 @@ const ExportTable = ({ onExportSuccess, onExportError }) => {
               disabled={!isDownloadable || isDownloading}
               loading={isDownloading}
               variant="plain"
-              onClick={() =>
-                handleDownloadClick(_id, fileUrl, filename)
-              }
+              onClick={() => handleDownloadClick(id, fileUrl, filename)}
             >
               {isDownloading ? "Downloading..." : "Download"}
             </Button>
@@ -205,7 +209,7 @@ const ExportTable = ({ onExportSuccess, onExportError }) => {
   const emptyStateMarkup = (
     <EmptyState
       heading="You have no export history"
-      image="https://cdn.shopify.com/s/files/1/0262/4074/files/emptystate-files.png"
+      image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
     >
       <Text as="p" variant="bodyMd">
         Export operations will appear here once completed.
@@ -220,8 +224,7 @@ const ExportTable = ({ onExportSuccess, onExportError }) => {
           <Box padding="400">
             <Banner tone="critical">
               <Text as="p">
-                {historyError.message ||
-                  "Failed to load export history."}
+                {historyError.message || "Failed to load export history."}
               </Text>
             </Banner>
           </Box>
@@ -241,9 +244,7 @@ const ExportTable = ({ onExportSuccess, onExportError }) => {
           ]}
           loading={historyLoading}
           emptyState={
-            histories.length === 0 && !historyLoading
-              ? emptyStateMarkup
-              : null
+            histories.length === 0 && !historyLoading ? emptyStateMarkup : null
           }
         >
           {historyRowMarkup}
@@ -254,3 +255,4 @@ const ExportTable = ({ onExportSuccess, onExportError }) => {
 };
 
 export default ExportTable;
+

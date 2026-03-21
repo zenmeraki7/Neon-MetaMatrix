@@ -1,4 +1,3 @@
-// web/services/product/productQuery.service.js
 import { getCache, setCache } from "../../utils/cacheUtils.js";
 import { productRepository } from "../../repositories/product.repository.js";
 import { editHistoryRepository } from "../../repositories/editHistory.repository.js";
@@ -71,6 +70,23 @@ function normalizeProductTypeRows(rows) {
     .filter(Boolean);
 }
 
+function addLegacyProductAliases(products) {
+  if (!Array.isArray(products)) {
+    return [];
+  }
+
+  return products.map((product) => {
+    if (!product || typeof product !== "object") {
+      return product;
+    }
+
+    return {
+      ...product,
+      shopifyId: product.id,
+    };
+  });
+}
+
 export class ProductQueryService {
   async getProductsWithQuery({
     shop,
@@ -118,8 +134,10 @@ export class ProductQueryService {
       productRepository.countByWhere(where),
     ]);
 
+    const normalizedProducts = addLegacyProductAliases(products);
+
     const result = {
-      products,
+      products: normalizedProducts,
       count,
       pagination: {
         total: count,

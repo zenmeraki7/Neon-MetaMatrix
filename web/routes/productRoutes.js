@@ -1,4 +1,3 @@
-// web/routes/productRoutes.js
 import express from "express";
 
 import {
@@ -38,7 +37,68 @@ import { uploadCsv } from "../middleware/uploadCsv.js";
 
 const router = express.Router();
 
-router.post("/get-all", validateQuery(productQuerySchema), getProductsWithQuery);
+function validateProductFilterParams(req, res, next) {
+  if (req.body === undefined || req.body === null) {
+    req.body = {};
+    return next();
+  }
+
+  if (typeof req.body !== "object" || Array.isArray(req.body)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid request body",
+    });
+  }
+
+  const { filterParams } = req.body;
+
+  if (filterParams === undefined) {
+    req.body.filterParams = [];
+    return next();
+  }
+
+  if (!Array.isArray(filterParams)) {
+    return res.status(400).json({
+      success: false,
+      message: "filterParams must be an array",
+    });
+  }
+
+  for (const filter of filterParams) {
+    if (!filter || typeof filter !== "object" || Array.isArray(filter)) {
+      return res.status(400).json({
+        success: false,
+        message: "Each filter must be an object",
+      });
+    }
+
+    if (filter.field !== undefined && typeof filter.field !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "Each filter field must be a string",
+      });
+    }
+
+    if (
+      filter.operator !== undefined &&
+      typeof filter.operator !== "string"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Each filter operator must be a string",
+      });
+    }
+  }
+
+  return next();
+}
+
+router.post(
+  "/get-all",
+  validateQuery(productQuerySchema),
+  validateProductFilterParams,
+  getProductsWithQuery,
+);
 
 router.post(
   "/export",

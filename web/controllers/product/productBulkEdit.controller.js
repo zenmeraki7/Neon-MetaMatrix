@@ -5,6 +5,8 @@ import { logApiError } from "../../utils/errorLogUtils.js";
 import { productBulkEditService } from "../../services/product/productBulkEdit.service.js";
 import { assertShopSession } from "../../services/shared/session.service.js";
 
+import { shopOperationLockService } from "../../services/shared/shopOperationLock.service.js";
+
 function getLang(req) {
   return typeof req?.query?.lang === "string" && req.query.lang.trim()
     ? req.query.lang.trim()

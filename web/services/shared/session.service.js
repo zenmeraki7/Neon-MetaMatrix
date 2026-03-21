@@ -1,4 +1,3 @@
-// web/services/shared/session.service.js
 function createHttpError(message, statusCode = 401) {
   const error = new Error(message);
   error.statusCode = statusCode;
@@ -41,4 +40,12 @@ export function assertShopSession(res, options = {}) {
     ...session,
     shop,
   };
+}
+
+export function hasShopSession(res) {
+  try {
+    return Boolean(assertShopSession(res));
+  } catch {
+    return false;
+  }
 }

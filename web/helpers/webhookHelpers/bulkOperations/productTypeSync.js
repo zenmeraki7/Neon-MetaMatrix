@@ -1,15 +1,12 @@
 import shopify from "../../../shopify.js";
 import axios from "axios";
-import readline from "readline";
 
-
+import { prisma } from "../../../config/database.js";
 import { getSession } from "../../../utils/sessionHandler.js";
 import { emitToUser } from "../../../socket.js";
 import { clearKeyCaches } from "../../../utils/cacheUtils.js";
-
-import { PrismaClient } from "../../../generated/prisma/index.js";
-
-const prisma = new PrismaClient();
+import { productSyncIngestService } from "../../../services/productService/productSyncIngest.service.js";
+import { syncRepository } from "../../../repositories/sync.repository.js";
 
 /* ────────────────────────────────────────────────────────────── */
 /*  MAIN ENTRY: handleSyncOperation                              */
@@ -23,9 +20,9 @@ export async function handleSyncOperation(bulkOperationId) {
       where: { bulkOperationId },
     });
 
-    if (!syncHistory) return;
-
-    let recordCount = 0;
+    if (!syncHistory) {
+      return;
+    }
 
     const session = await getSession(syncHistory.shop);
     if (!session) {
@@ -34,15 +31,15 @@ export async function handleSyncOperation(bulkOperationId) {
 
     const bulkOperation = await fetchBulkOperationDetails(
       session,
-      bulkOperationId
+      bulkOperationId,
     );
 
-    if (!bulkOperation) throw new Error("Bulk operation not found");
+    if (!bulkOperation) {
+      throw new Error("Bulk operation not found");
+    }
 
     if (bulkOperation.errorCode) {
-      throw new Error(
-        `Shopify error: ${bulkOperation.errorCode}`
-      );
+      throw new Error(`Shopify error: ${bulkOperation.errorCode}`);
     }
 
     if (bulkOperation.status !== "COMPLETED") {
@@ -58,25 +55,21 @@ export async function handleSyncOperation(bulkOperationId) {
       responseType: "stream",
     });
 
-    /* ───────────────────────── PRODUCT SYNC ───────────────────────── */
+    let recordCount = 0;
 
     if (syncHistory.operationType === "Product") {
-      const result = await processProductStreamAndInsert({
+      const result = await productSyncIngestService.formatAndSyncProductsToDB({
         dataStream: urlResponse.data,
         shop: session.shop,
+        replaceShopData: true,
       });
 
-      recordCount = result.totalProductsProcessed;
+      recordCount = Number(result?.totalProductsProcessed || 0);
 
-      await prisma.store.update({
-        where: { shopUrl: session.shop },
-        data: {
-          isProductSyncing: false,
-          isProductInitialySyning: false,
-          shopifyBulkJobCompleted: true,
-          lastProductSyncAt: new Date(),
-          storeTotalProducts: result.totalProductsProcessed,
-        },
+      await syncRepository.markProductSyncCompleted({
+        shopUrl: session.shop,
+        lastProductSyncAt: new Date(),
+        storeTotalProducts: recordCount,
       });
 
       emitToUser(session.shop, "product_sync", {
@@ -84,45 +77,63 @@ export async function handleSyncOperation(bulkOperationId) {
         totalProductsProcessed: result.totalProductsProcessed,
         totalVariantsProcessed: result.totalVariantsProcessed,
       });
+    } else if (syncHistory.operationType === "ProductType") {
+      await syncRepository.markProductTypeSyncCompleted({
+        shopUrl: session.shop,
+        lastProductTypeSyncAt: new Date(),
+      });
+
+      emitToUser(session.shop, "product_type_sync", {
+        message: "Product type sync completed",
+      });
+    } else if (syncHistory.operationType === "Collection") {
+      await syncRepository.markCollectionSyncCompleted({
+        shopUrl: session.shop,
+        lastCollectionSyncAt: new Date(),
+      });
+
+      emitToUser(session.shop, "collection_sync", {
+        message: "Collection sync completed",
+      });
     }
-
-    /* ───────────────────────── COMMON CLEANUP ───────────────────────── */
-
-    await clearKeyCaches(`${session.shop}:storeDetails`);
-    await clearKeyCaches(`${session.shop}:sync_details`);
-    await clearKeyCaches(`${session.shop}:ProductFetch`);
 
     const durationMs =
       new Date(bulkOperation.completedAt).getTime() -
       new Date(bulkOperation.createdAt).getTime();
 
-    await prisma.syncHistory.update({
-      where: { id: syncHistory.id },
-      data: {
-        status: "completed",
-        responseUrl: bulkOperation.url,
-        duration: Math.max(durationMs, 0),
-        recordCount,
-      },
+    await syncRepository.markSyncHistoryCompleted({
+      id: syncHistory.id,
+      responseUrl: bulkOperation.url,
+      duration: Math.max(durationMs, 0),
+      recordCount,
     });
+
+    await clearKeyCaches(`${session.shop}:storeDetails`);
+    await clearKeyCaches(`${session.shop}:sync_details`);
+    await clearKeyCaches(`${session.shop}:ProductFetch`);
 
     return { message: "Sync completed" };
   } catch (err) {
-    if (syncHistory) {
-      await prisma.syncHistory.update({
-        where: { id: syncHistory.id },
-        data: { status: "failed" },
+    if (syncHistory?.id) {
+      await syncRepository.markSyncHistoryFailed({
+        id: syncHistory.id,
       }).catch(() => {});
     }
 
     if (syncHistory?.shop) {
-      await prisma.store.update({
-        where: { shopUrl: syncHistory.shop },
-        data: {
-          isProductSyncing: false,
-          isProductInitialySyning: false,
-        },
-      }).catch(() => {});
+      if (syncHistory.operationType === "Product") {
+        await syncRepository.markProductSyncFailed({
+          shopUrl: syncHistory.shop,
+        }).catch(() => {});
+      } else if (syncHistory.operationType === "ProductType") {
+        await syncRepository.markProductTypeSyncFailed({
+          shopUrl: syncHistory.shop,
+        }).catch(() => {});
+      } else if (syncHistory.operationType === "Collection") {
+        await syncRepository.markCollectionSyncFailed({
+          shopUrl: syncHistory.shop,
+        }).catch(() => {});
+      }
     }
 
     throw err;
@@ -157,85 +168,4 @@ async function fetchBulkOperationDetails(session, bulkOperationId) {
   });
 
   return response.body?.data?.node;
-}
-
-/* ────────────────────────────────────────────────────────────── */
-/*  STREAM PROCESSOR (REPLACES OLD productFilterService)         */
-/* ────────────────────────────────────────────────────────────── */
-
-async function processProductStreamAndInsert({ dataStream, shop }) {
-  const BATCH_SIZE = 100;
-
-  let productRows = [];
-  let variantRows = [];
-
-  let totalProductsProcessed = 0;
-  let totalVariantsProcessed = 0;
-
-  const rl = readline.createInterface({
-    input: dataStream,
-    crlfDelay: Infinity,
-  });
-
-  const flush = async () => {
-    if (!productRows.length && !variantRows.length) return;
-
-    await prisma.$transaction([
-      prisma.product.createMany({
-        data: productRows,
-        skipDuplicates: true,
-      }),
-      prisma.variant.createMany({
-        data: variantRows,
-        skipDuplicates: true,
-      }),
-    ]);
-
-    productRows = [];
-    variantRows = [];
-  };
-
-  for await (const line of rl) {
-    if (!line.trim()) continue;
-
-    const json = JSON.parse(line);
-
-    if (json.__typename === "Product") {
-      productRows.push({
-        id: json.id,
-        shop,
-        title: json.title,
-        productType: json.productType,
-        vendor: json.vendor,
-        status: json.status,
-      });
-
-      totalProductsProcessed++;
-    }
-
-    if (json.__typename === "ProductVariant") {
-      variantRows.push({
-        id: json.id,
-        shop,
-        productId: json.product?.id,
-        price: json.price,
-      });
-
-      totalVariantsProcessed++;
-    }
-
-    if (
-      productRows.length >= BATCH_SIZE ||
-      variantRows.length >= BATCH_SIZE
-    ) {
-      await flush();
-    }
-  }
-
-  await flush();
-
-  return {
-    totalProductsProcessed,
-    totalVariantsProcessed,
-  };
 }

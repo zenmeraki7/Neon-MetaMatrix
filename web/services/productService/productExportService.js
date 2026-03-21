@@ -1,21 +1,15 @@
-import shopify from "../../shopify.js";
 import { Parser } from "json2csv";
 import { fieldMappings } from "../../utils/productExportUtils.js";
-import { graphqlProductsAllFieldQuery } from "../../graphql/product.js";
-import CacheService from "../../utils/cacheService.js";
 import { EXPORT_TYPES } from "../../Config/constants.js";
 import { getCache, setCache } from "../../utils/cacheUtils.js";
-import { productExportRepository } from "../../repositories/productExport.repository.js";
 
-function getGraphqlTopLevelErrors(response) {
-  return response?.body?.errors || [];
-}
+// ✅ Use unified repository
+import { exportRepository } from "../../repositories/export.repository.js";
 
-function getSafeMessage(err, fallback = "Unknown error") {
-  if (typeof err?.message === "string" && err.message.trim()) {
-    return err.message;
-  }
-  return fallback;
+function createHttpError(message, statusCode = 400) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
 }
 
 function ensureArray(value) {
@@ -25,101 +19,12 @@ function ensureArray(value) {
 export class ProductExportService {
   constructor(session) {
     this.session = session;
-    this.client = new shopify.api.clients.Graphql({ session });
     this.fieldMappings = fieldMappings;
   }
 
-  async _countProducts({ queryFilter = null }) {
-    const countData = await this.client.query({
-      data: {
-        query: `
-          query GetProductsCount($query: String) {
-            productsCount(query: $query, limit: null) {
-              count
-            }
-          }
-        `,
-        variables: { query: queryFilter },
-      },
-    });
-
-    const topLevelErrors = getGraphqlTopLevelErrors(countData);
-    if (topLevelErrors.length > 0) {
-      throw new Error(
-        topLevelErrors[0]?.message || "Failed to count products from Shopify",
-      );
-    }
-
-    const count = countData?.body?.data?.productsCount?.count;
-    return Number.isFinite(count) ? count : 0;
-  }
-
-  async fetchProducts({ queryFilter = null, count = 0 }) {
-    const cacheKey = `${this.session.shop}:${queryFilter}:export`;
-    const cacheData = await CacheService.get(cacheKey);
-
-    if (cacheData) {
-      return cacheData;
-    }
-
-    let hasNextPage = true;
-    let endCursor = null;
-    const allProducts = [];
-    const maxExpected = Number.isFinite(Number(count)) ? Number(count) : 0;
-
-    while (hasNextPage) {
-      const response = await this.client.query({
-        data: {
-          query: graphqlProductsAllFieldQuery,
-          variables: {
-            first: 250,
-            after: endCursor || null,
-            query: queryFilter || null,
-          },
-        },
-      });
-
-      const topLevelErrors = getGraphqlTopLevelErrors(response);
-      if (topLevelErrors.length > 0) {
-        throw new Error(
-          topLevelErrors[0]?.message || "Failed to fetch products from Shopify",
-        );
-      }
-
-      const productsConnection = response?.body?.data?.products;
-      const edges = ensureArray(productsConnection?.edges);
-
-      allProducts.push(...edges);
-      hasNextPage = Boolean(productsConnection?.pageInfo?.hasNextPage);
-      endCursor = productsConnection?.pageInfo?.endCursor || null;
-
-      if (maxExpected > 0 && allProducts.length >= maxExpected) {
-        break;
-      }
-    }
-
-    await setCache(cacheKey, allProducts, 300);
-    return allProducts;
-  }
-
-  _checkValidation(count, activePlan) {
-    if (activePlan === "Basic (Monthly)") {
-      if (count > 50) {
-        throw new Error(
-          "You are a basic plan user, you can only export 50 products at a time",
-        );
-      }
-      return;
-    }
-
-    if (activePlan === "Advanced (Monthly)") {
-      if (count > 150) {
-        throw new Error(
-          "You are an advanced plan user, you can only export 150 products at a time",
-        );
-      }
-    }
-  }
+  /* ======================================================
+     CSV TRANSFORMATION (kept — still useful)
+  ====================================================== */
 
   transformToCSV(products, requestedColumns) {
     const csvData = [];
@@ -135,12 +40,7 @@ export class ProductExportService {
 
     const safeSplitPop = (val) => (val ? val.toString().split("/").pop() : "");
 
-    ensureArray(products).forEach((productEdgeOrNode) => {
-      const product =
-        productEdgeOrNode?.node && typeof productEdgeOrNode.node === "object"
-          ? productEdgeOrNode.node
-          : productEdgeOrNode;
-
+    ensureArray(products).forEach((product) => {
       const variants = ensureArray(product?.variants);
       const images = ensureArray(product?.media);
 
@@ -163,13 +63,6 @@ export class ProductExportService {
               value = index === 0 ? getNestedValue(product, path) : "";
             }
 
-            if (column === "Weight") {
-              const weight = variant?.inventoryItem?.measurement?.weight;
-              value = weight
-                ? `${weight.value} ${weight.unit}`
-                : "Not Specified";
-            }
-
             if (column === "ProductID") {
               value = index === 0 ? safeSplitPop(product?.id) : "";
             }
@@ -189,6 +82,7 @@ export class ProductExportService {
 
         ensureArray(requestedColumns).forEach((column) => {
           const path = this.fieldMappings[column]?.split(".") || [];
+
           let value =
             (path[0] === "images" || path[0] === "media") && images.length > 0
               ? getNestedValue(images[0], path.slice(1))
@@ -217,39 +111,65 @@ export class ProductExportService {
     return parser.parse(csvData);
   }
 
-  async getAllExportHistories(lang) {
-    const language = lang || "en";
-    const cacheKey = `${this.session.shop}:fetchExportHistories:${language}`;
+  /* ======================================================
+     EXPORT HISTORY (aligned with new repository)
+  ====================================================== */
+
+  async getAllExportHistories(lang = "en") {
+    const shop = this.session?.shop;
+
+    if (!shop) {
+      throw createHttpError("Shopify session missing", 401);
+    }
+
+    const cacheKey = `${shop}:fetchExportHistories:${lang}`;
 
     const cacheHistories = await getCache(cacheKey);
     if (cacheHistories) {
       return cacheHistories;
     }
 
-    const histories = await productExportRepository.findRecentExportJobsByShop({
-      shop: this.session.shop,
-      take: 10,
-    });
+    // ✅ Use ExportJob instead of legacy repo
+  const histories = await exportRepository.findExportHistoryByShop
+  ? await exportRepository.findExportHistoryByShop({ shop })
+  : [];
 
-    const formattedHistory = histories.map((history) => ({
-      ...history,
-      type: EXPORT_TYPES[history.type]?.[language] || history.type || "",
-    }));
+    const formatted = histories.map((item) => ({
+  id: item.id,
+  filename: item.filename,
+  status: item.status,
+  totalItems: item.totalItems,
+  duration: item.duration,
+  createdAt: item.createdAt,
+  type: EXPORT_TYPES[item.type]?.[lang] || item.type || "",
+}));
 
-    await setCache(cacheKey, formattedHistory, 300);
-    return formattedHistory;
+    await setCache(cacheKey, formatted, 300);
+
+    return formatted;
   }
 
   async getExportHistoryDetails(id) {
-    const history = await productExportRepository.findExportHistoryByIdAndShop({
-      id,
-      shop: this.session.shop,
-    });
+    const shop = this.session?.shop;
 
-    if (!history) {
-      throw new Error("export history not found");
+    if (!shop) {
+      throw createHttpError("Shopify session missing", 401);
     }
 
-    return history;
+    if (!id) {
+      throw createHttpError("Export history id is required", 400);
+    }
+
+    // ✅ Use unified repository
+    const job = await exportRepository.findExportJobByIdAndShop({
+      id,
+      shop,
+    });
+
+    if (!job) {
+      throw createHttpError("Export history not found", 404);
+    }
+
+    return job;
   }
 }

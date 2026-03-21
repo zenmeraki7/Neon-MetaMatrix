@@ -1,6 +1,4 @@
 import shopify from "../../shopify.js";
-import readline from "readline";
-import { prisma } from "../../config/database.js";
 import { clearKeyCaches } from "../../utils/cacheUtils.js";
 import { syncRepository } from "../../repositories/sync.repository.js";
 
@@ -10,40 +8,114 @@ function createHttpError(statusCode, message) {
   return err;
 }
 
-export class ProductSyncService {
-  // ==================================================
-  // 🚀 START BULK OPERATION (FIXED QUERY)
-  // ==================================================
-  async startBulkOperationToFetchProducts({ session, isInitialSync = false }) {
-    if (!session?.shop) {
-      throw createHttpError(401, "Invalid shop session");
-    }
+function getTopLevelErrors(response) {
+  return Array.isArray(response?.body?.errors) ? response.body.errors : [];
+}
 
-    const client = new shopify.api.clients.Graphql({ session });
+function getUserErrors(response) {
+  return (
+    response?.body?.data?.bulkOperationRunQuery?.userErrors || []
+  );
+}
 
-    const query = `
-      mutation {
-        bulkOperationRunQuery(
-          query: """
-          {
-            products {
-              edges {
-                node {
-                  id
+function getBulkOperation(response) {
+  return response?.body?.data?.bulkOperationRunQuery?.bulkOperation || null;
+}
+
+function buildProductBulkQueryMutation() {
+  return `
+    mutation {
+      bulkOperationRunQuery(
+        query: """
+        {
+          products {
+            edges {
+              node {
+                __typename
+                id
+                title
+                handle
+                productType
+                vendor
+                status
+                tags
+                templateSuffix
+                descriptionHtml
+                createdAt
+                updatedAt
+                publishedAt
+                totalInventory
+                onlineStoreUrl
+                seo {
                   title
-                  handle
-                  productType
-                  vendor
-                  status
-                  createdAt
-                  updatedAt
-                  variants {
-                    edges {
-                      node {
-                        id
-                        title
-                        price
-                        sku
+                  description
+                }
+                category {
+                  id
+                  name
+                }
+                options {
+                  id
+                  name
+                  position
+                  values
+                }
+                collections(first: 50) {
+                  edges {
+                    node {
+                      __typename
+                      id
+                      title
+                    }
+                  }
+                }
+                featuredMedia {
+                  __typename
+                  ... on MediaImage {
+                    id
+                    alt
+                    preview {
+                      image {
+                        url
+                        altText
+                      }
+                    }
+                  }
+                }
+                variants {
+                  edges {
+                    node {
+                      __typename
+                      id
+                      title
+                      sku
+                      barcode
+                      price
+                      compareAtPrice
+                      inventoryQuantity
+                      inventoryPolicy
+                      taxable
+                      taxCode
+                      position
+                      selectedOptions {
+                        name
+                        value
+                      }
+                      inventoryItem {
+                        tracked
+                        requiresShipping
+                        countryCodeOfOrigin
+                        harmonizedSystemCode
+                        unitCost {
+                          amount
+                          currencyCode
+                        }
+                        measurement {
+                          weight {
+                            value
+                            unit
+                          }
+                        }
                       }
                     }
                   }
@@ -51,28 +123,55 @@ export class ProductSyncService {
               }
             }
           }
-          """
-        ) {
-          bulkOperation {
-            id
-            status
-          }
-          userErrors {
-            message
-          }
+        }
+        """
+      ) {
+        bulkOperation {
+          id
+          status
+        }
+        userErrors {
+          field
+          message
         }
       }
-    `;
+    }
+  `;
+}
 
-    const response = await client.query({ data: query });
-
-    const result = response?.body?.data?.bulkOperationRunQuery;
-
-    if (result?.userErrors?.length) {
-      throw createHttpError(400, JSON.stringify(result.userErrors));
+export class ProductSyncService {
+  async startBulkOperationToFetchProducts({ session, isInitialSync = false }) {
+    if (!session?.shop) {
+      throw createHttpError(401, "Invalid shop session");
     }
 
-    if (!result?.bulkOperation?.id) {
+    const client = new shopify.api.clients.Graphql({ session });
+
+    const response = await client.query({
+      data: {
+        query: buildProductBulkQueryMutation(),
+      },
+    });
+
+    const topLevelErrors = getTopLevelErrors(response);
+    if (topLevelErrors.length > 0) {
+      throw createHttpError(
+        502,
+        topLevelErrors[0]?.message || "Failed to start product sync",
+      );
+    }
+
+    const userErrors = getUserErrors(response);
+    if (userErrors.length > 0) {
+      throw createHttpError(
+        400,
+        userErrors[0]?.message || "Failed to start product sync",
+      );
+    }
+
+    const bulkOperation = getBulkOperation(response);
+
+    if (!bulkOperation?.id) {
       throw createHttpError(500, "Bulk operation failed");
     }
 
@@ -85,7 +184,7 @@ export class ProductSyncService {
 
     await syncRepository.createSyncHistory({
       shop: session.shop,
-      bulkOperationId: result.bulkOperation.id,
+      bulkOperationId: bulkOperation.id,
       status: "processing",
       operationType: "Product",
       isInitialProductSync: isInitialSync,
@@ -93,126 +192,8 @@ export class ProductSyncService {
 
     return {
       message: "Bulk product sync started",
-      bulkOperationId: result.bulkOperation.id,
+      bulkOperationId: bulkOperation.id,
     };
-  }
-
-  // ==================================================
-  // 🔥 MAIN SYNC LOGIC (FINAL FIXED VERSION)
-  // ==================================================
-  async formatAndSyncProductsToDB({
-    dataStream,
-    shop,
-    replaceShopData = false,
-  }) {
-    let totalProductsProcessed = 0;
-    let totalVariantsProcessed = 0;
-
-    try {
-      if (!shop) {
-        throw new Error("Shop is required for syncing");
-      }
-
-      // 🔴 optional full reset
-      if (replaceShopData) {
-        await prisma.variant.deleteMany({ where: { shop } });
-        await prisma.product.deleteMany({ where: { shop } });
-      }
-
-      const rl = readline.createInterface({
-        input: dataStream,
-        crlfDelay: Infinity,
-      });
-
-      const BATCH_SIZE = 100;
-
-      let productBatch = [];
-      let variantBatch = [];
-
-      const flush = async () => {
-        if (!productBatch.length && !variantBatch.length) return;
-
-        await prisma.$transaction([
-          prisma.product.createMany({
-            data: productBatch,
-            skipDuplicates: true,
-          }),
-          prisma.variant.createMany({
-            data: variantBatch,
-            skipDuplicates: true,
-          }),
-        ]);
-
-        productBatch = [];
-        variantBatch = [];
-      };
-
-      for await (const line of rl) {
-        if (!line.trim()) continue;
-
-        let json;
-        try {
-          json = JSON.parse(line);
-        } catch {
-          continue;
-        }
-
-        // ✅ Shopify Bulk returns flat JSONL (NOT edges)
-        if (json.__typename === "Product") {
-          productBatch.push({
-            shop,
-            shopifyId: json.id,
-            title: json.title || "",
-            handle: json.handle || "",
-            productType: json.productType || "",
-            vendor: json.vendor || "",
-            status: json.status || "ACTIVE",
-            createdAt: json.createdAt
-              ? new Date(json.createdAt)
-              : new Date(),
-            updatedAt: json.updatedAt
-              ? new Date(json.updatedAt)
-              : new Date(),
-          });
-
-          totalProductsProcessed++;
-        }
-
-        if (json.__typename === "ProductVariant") {
-          variantBatch.push({
-            shop,
-            shopifyId: json.id,
-            productId: json.product?.id || null, // important
-            title: json.title || "",
-            price: Number(json.price || 0),
-            sku: json.sku || "",
-          });
-
-          totalVariantsProcessed++;
-        }
-
-        if (
-          productBatch.length >= BATCH_SIZE ||
-          variantBatch.length >= BATCH_SIZE
-        ) {
-          await flush();
-        }
-      }
-
-      await flush();
-
-      console.log(`✅ Sync completed for ${shop}`);
-      console.log(`Products: ${totalProductsProcessed}`);
-      console.log(`Variants: ${totalVariantsProcessed}`);
-
-      return {
-        totalProductsProcessed,
-        totalVariantsProcessed,
-      };
-    } catch (error) {
-      console.error("❌ Sync failed:", error);
-      throw error;
-    }
   }
 }
 

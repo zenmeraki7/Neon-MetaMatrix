@@ -5,25 +5,24 @@ class ProductRepository {
     return prisma.product.count({ where });
   }
 
- async findProductsForList({ where, orderBy, skip, take }) {
-  return prisma.product.findMany({
-    where,
-    select: {
-      id: true,
-      shopifyId: true,
-      title: true,
-      handle: true,
-      productType: true,
-      vendor: true,
-      status: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-    orderBy,
-    skip,
-    take,
-  });
-}
+  async findProductsForList({ where, orderBy, skip, take }) {
+    return prisma.product.findMany({
+      where,
+      select: {
+        id: true,
+        title: true,
+        handle: true,
+        productType: true,
+        vendor: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      orderBy,
+      skip,
+      take,
+    });
+  }
 
   async findDistinctProductTypes({ shop, search = "", take = 20 }) {
     const rows = await prisma.product.findMany({

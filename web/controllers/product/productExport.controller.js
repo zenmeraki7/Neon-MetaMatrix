@@ -1,4 +1,5 @@
-// web/controllers/product/productExport.controller.js
+import axios from "axios";
+
 import { errorResponse } from "../../utils/responseUtils.js";
 import { logApiError } from "../../utils/errorLogUtils.js";
 import { productExportService } from "../../services/product/productExport.service.js";
@@ -60,7 +61,7 @@ export const handleExportProductsData = async (req, res) => {
       req,
       res,
       session,
-      source: "POST /api/export-products",
+      source: "POST /api/products/export",
       fallbackMessage: "Failed to start export process",
     });
   }
@@ -84,7 +85,7 @@ export const createProductExport = async (req, res) => {
       req,
       res,
       session,
-      source: "POST /api/exports/create",
+      source: "POST /api/products/export/create",
       fallbackMessage: "Failed to create export job",
     });
   }
@@ -102,23 +103,34 @@ export const handleDownloadExportProductsData = async (req, res) => {
     });
 
     if (!result) {
-      return res.status(404).json({
-        message: "Export history not found",
-      });
+      return res.status(404).json(errorResponse("Export history not found"));
     }
 
-    res.header("Content-Type", "text/csv");
-    res.attachment(result.filename);
+    // 🔥 FETCH FILE FROM CLOUDINARY
+    const fileResponse = await axios.get(result.fileUrl, {
+      responseType: "stream",
+    });
 
-    return res.send(result.exportedData);
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${result.filename}"`,
+    );
+
+    fileResponse.data.pipe(res);
   } catch (err) {
     return handleControllerError({
       err,
       req,
       res,
       session,
-      source: "GET /api/export-products/:id/download",
+      source: "GET /api/products/download-export/:id",
       fallbackMessage: "Failed to download export file",
     });
   }
 };
+
+//   res.header("Content-Type", "text/csv");
+//   res.attachment(result.filename);
+
+// return res.redirect(result.exportedData);

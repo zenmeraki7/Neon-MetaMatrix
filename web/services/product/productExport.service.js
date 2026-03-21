@@ -220,26 +220,28 @@ export class ProductExportServiceFacade {
     }
   }
 
-  async handleDownloadExportProductsData({ session, exportHistoryId }) {
-    const normalizedSession = ensureValidSession(session);
+async handleDownloadExportProductsData({ session, exportHistoryId }) {
+  const normalizedSession = ensureValidSession(session);
 
-    if (!exportHistoryId) {
-      throw createHttpError("Export history id is required", 400);
-    }
+  const history =
+    await exportRepository.findExportHistoryByIdAndShop({
+      id: exportHistoryId,
+      shop: normalizedSession.shop,
+    });
 
-    const exportReadService = new ProductExportService(normalizedSession);
-    const result = await exportReadService.getExportHistoryDetails(exportHistoryId);
-
-    if (!result) {
-      return null;
-    }
-
-    if (result.shop && result.shop !== normalizedSession.shop) {
-      throw createHttpError("Export history not found", 404);
-    }
-
-    return result;
+  if (!history) {
+    throw createHttpError("Export history not found", 404);
   }
+
+  if (!history.exportedData) {
+    throw createHttpError("Export file not ready yet", 400);
+  }
+
+  return {
+    filename: history.filename,
+    fileUrl: history.exportedData, // 🔥 URL
+  };
+}
 }
 
 export const productExportService = new ProductExportServiceFacade();

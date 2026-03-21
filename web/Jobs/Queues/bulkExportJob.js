@@ -1,23 +1,20 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import { Queue } from "bullmq";
 import { connection } from "../../Config/redis.js";
-import logger from "../../utils/loggerUtils.js";
 
-// import connectToDatabase from "../../Server/Config/database.js";
+const QUEUE_NAME = process.env.EXPORT_QUEUE || "export_queue";
 
-// await connectToDatabase(); // Connect to the database when the server starts
+console.log("🚀 EXPORT QUEUE:", QUEUE_NAME);
 
-export const bulkExportQueue = new Queue(process.env.EXPORT_QUEUE, {
-  connection,
-});
+export const bulkExportQueue = new Queue(QUEUE_NAME, { connection });
 
-// Add a job to the queue
 export const addbulkExportJob = async (data) => {
-  try {
-    const job = await bulkExportQueue.add("AddingBulkExport", data, {
-      removeOnComplete: true,
-    });
-    return job;
-  } catch (error) {
-    throw error;
-  }
+  console.log("📦 ADDING JOB:", data);
+
+  return bulkExportQueue.add("export-products", data, {
+    removeOnComplete: true,
+    removeOnFail: false,
+  });
 };

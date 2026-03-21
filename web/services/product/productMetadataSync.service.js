@@ -1,4 +1,3 @@
-// web/services/product/productMetadataSync.service.js
 import shopify from "../../shopify.js";
 import { getCurrentBulkOperationStatus } from "../../utils/bulkOperationHelper.js";
 import { clearKeyCaches } from "../../utils/cacheUtils.js";
@@ -15,9 +14,7 @@ function getTopLevelErrors(response) {
 }
 
 function getUserErrors(response) {
-  return (
-    response?.body?.data?.bulkOperationRunQuery?.userErrors || []
-  );
+  return response?.body?.data?.bulkOperationRunQuery?.userErrors || [];
 }
 
 function getBulkOperation(response) {
@@ -130,7 +127,7 @@ export class ProductMetadataSyncService {
     await clearKeyCaches(`${shop}:sync_details`);
 
     return {
-      message: "productType syncing started",
+      message: "Product type sync started",
       operationId: bulkOperationId,
     };
   }

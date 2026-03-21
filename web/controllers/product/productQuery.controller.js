@@ -1,4 +1,3 @@
-// web/controllers/product/productQuery.controller.js
 import { successResponse, errorResponse } from "../../utils/responseUtils.js";
 import { logApiError } from "../../utils/errorLogUtils.js";
 import { productQueryService } from "../../services/product/productQuery.service.js";
@@ -57,8 +56,6 @@ export const getProductsWithQuery = async (req, res) => {
   try {
     session = assertShopSession(res);
 
-    
-
     const result = await productQueryService.getProductsWithQuery({
       shop: session.shop,
       queryParams: req.query || {},
@@ -75,7 +72,7 @@ export const getProductsWithQuery = async (req, res) => {
       req,
       res,
       session,
-      source: "GET /api/products",
+      source: "POST /api/products/get-all",
       fallbackMessage: "Failed to fetch products",
     });
   }
@@ -104,7 +101,7 @@ export const getProductTypes = async (req, res) => {
       req,
       res,
       session,
-      source: "GET /api/product-types",
+      source: "GET /api/products/product-type-all",
       fallbackMessage: "Failed to fetch product types",
     });
   }
@@ -139,7 +136,7 @@ export const checkEditStatus = async (req, res) => {
       req,
       res,
       session,
-      source: "GET /api/edit-status/:id",
+      source: "GET /api/products/bulk-edit-status/:id",
       fallbackMessage: "Failed to fetch edit status",
     });
   }
@@ -162,7 +159,7 @@ export const clearProductTypes = async (req, res) => {
       req,
       res,
       session,
-      source: "POST /api/product-types/clear",
+      source: "GET /api/products/product-type-refresh",
       fallbackMessage: "Failed to refresh product types",
     });
   }

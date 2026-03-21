@@ -1,4 +1,5 @@
 // web/services/shared/shopOperationLock.service.js
+
 import crypto from "crypto";
 import {
   getCache,
@@ -8,12 +9,13 @@ import {
 
 const inMemoryStore = new Map();
 
+// =========================
+// HELPERS
+// =========================
 function createHttpError(message, statusCode = 400, code) {
   const error = new Error(message);
   error.statusCode = statusCode;
-  if (code) {
-    error.code = code;
-  }
+  if (code) error.code = code;
   return error;
 }
 
@@ -64,48 +66,48 @@ function stableStringify(value) {
 }
 
 function buildHash(value) {
-  return crypto.createHash("sha256").update(stableStringify(value)).digest("hex");
+  return crypto
+    .createHash("sha256")
+    .update(stableStringify(value))
+    .digest("hex");
 }
 
 function parseCacheValue(value) {
-  if (value == null) {
-    return null;
+  if (!value) return null;
+
+  if (typeof value === "object") return value;
+
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
   }
 
-  if (typeof value === "object") {
-    return value;
-  }
-
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 function isExpired(record) {
   return !record?.expiresAt || record.expiresAt <= getNow();
 }
 
+// =========================
+// STORAGE
+// =========================
 async function readLock(key) {
   try {
     const cached = await getCache(key);
     const parsed = parseCacheValue(cached);
+
     if (parsed && !isExpired(parsed)) {
       return parsed;
     }
-  } catch {
-    // ignore cache read failure and fall back
-  }
+  } catch {}
 
   const memoryRecord = inMemoryStore.get(key);
-  if (!memoryRecord) {
-    return null;
-  }
+
+  if (!memoryRecord) return null;
 
   if (isExpired(memoryRecord)) {
     inMemoryStore.delete(key);
@@ -120,9 +122,7 @@ async function writeLock(key, record, ttlSeconds) {
 
   try {
     await setCache(key, record, ttlSeconds);
-  } catch {
-    // best-effort cache write; in-memory fallback remains active
-  }
+  } catch {}
 }
 
 async function deleteLock(key) {
@@ -130,21 +130,21 @@ async function deleteLock(key) {
 
   try {
     await clearKeyCaches(key);
-  } catch {
-    // best-effort cleanup
-  }
+  } catch {}
 }
 
 function createToken() {
   return crypto.randomUUID();
 }
 
+// =========================
+// SERVICE
+// =========================
 export class ShopOperationLockService {
   buildIdempotencyKey({ explicitKey, payload, shop, scope }) {
     const normalizedExplicitKey = normalizeIdempotencyKey(explicitKey);
-    if (normalizedExplicitKey) {
-      return normalizedExplicitKey;
-    }
+
+    if (normalizedExplicitKey) return normalizedExplicitKey;
 
     return buildHash({
       shop: normalizeShop(shop),
@@ -153,6 +153,9 @@ export class ShopOperationLockService {
     });
   }
 
+  // =========================
+  // 🔥 FIXED LOCK LOGIC
+  // =========================
   async acquireOperation({
     shop,
     scope,
@@ -165,10 +168,11 @@ export class ShopOperationLockService {
     const normalizedScope = normalizeScope(scope);
 
     if (!normalizedShop) {
-      throw createHttpError("Shop is required for operation locking", 500);
+      throw createHttpError("Shop is required", 500);
     }
 
     const key = buildLockKey(normalizedShop, normalizedScope);
+
     const derivedIdempotencyKey = this.buildIdempotencyKey({
       explicitKey: idempotencyKey,
       payload,
@@ -176,33 +180,46 @@ export class ShopOperationLockService {
       scope: normalizedScope,
     });
 
-    const existing = await readLock(key);
+    let existing = await readLock(key);
+
+    // 🧹 REMOVE EXPIRED LOCK
+    if (existing && isExpired(existing)) {
+      await deleteLock(key);
+      existing = null;
+    }
 
     if (existing) {
+      // ✅ SAME REQUEST → REPLAY
       if (existing.idempotencyKey === derivedIdempotencyKey) {
-        if (existing.state === "completed" && existing.result !== undefined) {
+        if (existing.state === "completed") {
           return {
             replay: true,
             result: safeClone(existing.result),
             token: existing.token,
-            idempotencyKey: derivedIdempotencyKey,
           };
         }
 
         throw createHttpError(
-          "An identical operation is already in progress",
+          "Same request already in progress",
           409,
-          "OPERATION_ALREADY_IN_PROGRESS",
+          "OPERATION_ALREADY_IN_PROGRESS"
         );
       }
 
-      throw createHttpError(
-        "Another operation is already in progress for this shop",
-        409,
-        "SHOP_OPERATION_LOCKED",
-      );
+      // ✅ COMPLETED → ALLOW NEW
+      if (existing.state === "completed") {
+        await deleteLock(key);
+      } else {
+        // ❌ RUNNING → BLOCK
+        throw createHttpError(
+          "Another operation is already in progress for this shop",
+          409,
+          "SHOP_OPERATION_LOCKED"
+        );
+      }
     }
 
+    // 🚀 CREATE LOCK
     const token = createToken();
     const expiresAt = getNow() + lockTtlSeconds * 1000;
 
@@ -223,11 +240,10 @@ export class ShopOperationLockService {
     return {
       replay: false,
       token,
-      key,
-      idempotencyKey: derivedIdempotencyKey,
     };
   }
 
+  // =========================
   async completeOperation({
     shop,
     scope,
@@ -235,40 +251,31 @@ export class ShopOperationLockService {
     result,
     replayTtlSeconds = 3600,
   }) {
-    const normalizedShop = normalizeShop(shop);
-    const normalizedScope = normalizeScope(scope);
-    const key = buildLockKey(normalizedShop, normalizedScope);
+    const key = buildLockKey(normalizeShop(shop), normalizeScope(scope));
 
     const existing = await readLock(key);
-    if (!existing || existing.token !== token) {
-      return;
-    }
 
-    const completedRecord = {
+    if (!existing || existing.token !== token) return;
+
+    const updated = {
       ...existing,
       state: "completed",
       result: safeClone(result),
       updatedAt: new Date().toISOString(),
       expiresAt: getNow() + replayTtlSeconds * 1000,
-      replayTtlSeconds,
     };
 
-    await writeLock(key, completedRecord, replayTtlSeconds);
+    await writeLock(key, updated, replayTtlSeconds);
   }
 
+  // =========================
   async releaseOperation({ shop, scope, token }) {
-    const normalizedShop = normalizeShop(shop);
-    const normalizedScope = normalizeScope(scope);
-    const key = buildLockKey(normalizedShop, normalizedScope);
+    const key = buildLockKey(normalizeShop(shop), normalizeScope(scope));
 
     const existing = await readLock(key);
-    if (!existing) {
-      return;
-    }
 
-    if (token && existing.token !== token) {
-      return;
-    }
+    if (!existing) return;
+    if (token && existing.token !== token) return;
 
     await deleteLock(key);
   }

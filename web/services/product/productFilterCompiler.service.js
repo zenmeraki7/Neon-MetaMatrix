@@ -1,11 +1,14 @@
-// web/services/product/productFilterCompiler.service.js
 function normalizeBooleanValue(value) {
   if (typeof value === "boolean") {
     return value;
   }
 
-  const normalized = String(value).trim().toLowerCase();
-  return ["true", "1", "yes", "active"].includes(normalized);
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return ["true", "1", "yes"].includes(normalized);
+}
+
+function normalizeStringValue(value) {
+  return String(value ?? "").trim();
 }
 
 export function buildPrismaSortQuery(sortKey, sortOrder) {
@@ -280,18 +283,25 @@ export function buildProductPrismaWhere(filterParams = [], shop) {
     if (!field) continue;
 
     switch (field) {
-      case "search":
+      case "search": {
+        const normalizedSearch = normalizeStringValue(value);
+
+        if (!normalizedSearch) {
+          break;
+        }
+
         AND.push({
           OR: [
-            { title: { contains: value, mode: "insensitive" } },
-            { vendor: { contains: value, mode: "insensitive" } },
-            { productType: { contains: value, mode: "insensitive" } },
-            { handle: { contains: value, mode: "insensitive" } },
-            { description: { contains: value, mode: "insensitive" } },
-            { categoryName: { contains: value, mode: "insensitive" } },
+            { title: { contains: normalizedSearch, mode: "insensitive" } },
+            { vendor: { contains: normalizedSearch, mode: "insensitive" } },
+            { productType: { contains: normalizedSearch, mode: "insensitive" } },
+            { handle: { contains: normalizedSearch, mode: "insensitive" } },
+            { description: { contains: normalizedSearch, mode: "insensitive" } },
+            { categoryName: { contains: normalizedSearch, mode: "insensitive" } },
           ],
         });
         break;
+      }
 
       case "title":
         AND.push(buildPrismaStringFilter("title", operator, value));

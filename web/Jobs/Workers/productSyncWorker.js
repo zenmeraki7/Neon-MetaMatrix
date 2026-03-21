@@ -1,18 +1,12 @@
-// ============================================
-// Jobs/Workers/productSyncWorker.js (FINAL CLEAN)
-// ============================================
-
 import { Worker } from "bullmq";
 import { connection } from "../../Config/redis.js";
-
 import { productSyncService } from "../../services/sync/productSync.service.js";
 import { getCurrentBulkOperationStatus } from "../../utils/bulkOperationHelper.js";
 import { productSyncQueue } from "../Queues/productSyncQueue.js";
-
 import { prisma } from "../../config/database.js";
 import shopify from "../../shopify.js";
-
 import dotenv from "dotenv";
+
 dotenv.config();
 
 // ============================================
@@ -140,7 +134,7 @@ async function handlePrioritySync() {
 }
 
 // ============================================
-// SYNC SINGLE STORE (FIXED)
+// SYNC SINGLE STORE (START-ONLY)
 // ============================================
 async function syncStore(shopUrl) {
   try {
@@ -151,66 +145,22 @@ async function syncStore(shopUrl) {
       return;
     }
 
-    // 🔹 check if already running
-    const { status } = await getCurrentBulkOperationStatus(session, "QUERY");
+    const currentBulkStatus = await getCurrentBulkOperationStatus(
+      session,
+      "QUERY",
+    );
 
-    if (status === "RUNNING") {
+    if (currentBulkStatus?.status === "RUNNING") {
       console.log(`⏳ Bulk already running for ${shopUrl}`);
       return;
     }
 
-    // 🔹 get latest bulk operation ID
-    const bulkOperation = await getCurrentBulkOperationStatus(session, "QUERY");
-
-    if (!bulkOperation?.id) {
-      console.warn("⚠️ No bulk operation found");
-      return;
-    }
-
-    // 🔹 fetch bulk details
-    const client = new shopify.api.clients.Graphql({ session });
-
-    const response = await client.query({
-      data: {
-        query: `
-          query ($id: ID!) {
-            node(id: $id) {
-              ... on BulkOperation {
-                id
-                status
-                url
-              }
-            }
-          }
-        `,
-        variables: { id: bulkOperation.id },
-      },
+    await productSyncService.startBulkOperationToFetchProducts({
+      session,
+      isInitialSync: false,
     });
 
-    const node = response?.body?.data?.node;
-
-    if (!node?.url) {
-      console.warn("⚠️ No bulk URL yet");
-      return;
-    }
-
-    console.log("🔥 BULK URL:", node.url);
-
-    // 🔹 download JSONL file
-    const axios = (await import("axios")).default;
-
-    const streamResponse = await axios.get(node.url, {
-      responseType: "stream",
-    });
-
-    // 🔥 THIS IS THE FIX
-    await productSyncService.formatAndSyncProductsToDB({
-      dataStream: streamResponse.data,
-      shop: session.shop,
-    });
-
-    console.log(`✅ Sync completed for ${shopUrl}`);
-
+    console.log(`✅ Bulk product sync started for ${shopUrl}`);
   } catch (error) {
     console.error(`❌ Error syncing ${shopUrl}:`, error?.message || error);
   }

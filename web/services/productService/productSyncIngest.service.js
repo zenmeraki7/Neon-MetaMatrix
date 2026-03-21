@@ -4,13 +4,22 @@ import { productRepository } from "../../repositories/product.repository.js";
 import { syncRepository } from "../../repositories/sync.repository.js";
 
 class ProductSyncIngestService {
-  async formatAndSyncProductsToDB({ dataStream, shop, replaceShopData = true }) {
+  async formatAndSyncProductsToDB({
+    dataStream,
+    shop,
+    replaceShopData = true,
+  }) {
     return new Promise((resolve, reject) => {
       const PRODUCT_BATCH_SIZE = 1000;
 
       let productBatch = [];
       let totalProductsProcessed = 0;
       let totalVariantsProcessed = 0;
+      let skippedInvalidProducts = 0;
+      let skippedInvalidVariants = 0;
+      let skippedOrphanChildren = 0;
+      let parseErrorCount = 0;
+
       const productsMap = new Map();
 
       const normalizeNullableString = (value) => {
@@ -40,13 +49,17 @@ class ProductSyncIngestService {
       };
 
       const getOptionValueByIndex = (selectedOptions = [], index) => {
-        if (!Array.isArray(selectedOptions) || !selectedOptions[index]) return null;
+        if (!Array.isArray(selectedOptions) || !selectedOptions[index]) {
+          return null;
+        }
+
         return normalizeNullableString(selectedOptions[index]?.value);
       };
 
       const extractCollections = (collections) => {
         if (!collections) return [];
         if (Array.isArray(collections)) return collections;
+
         if (Array.isArray(collections.edges)) {
           return collections.edges
             .map((edge) => edge?.node)
@@ -56,15 +69,18 @@ class ProductSyncIngestService {
               title: node.title,
             }));
         }
+
         return [];
       };
 
       const extractVariants = (variants) => {
         if (!variants) return [];
         if (Array.isArray(variants)) return variants;
+
         if (Array.isArray(variants.edges)) {
           return variants.edges.map((edge) => edge?.node).filter(Boolean);
         }
+
         return [];
       };
 
@@ -163,7 +179,9 @@ class ProductSyncIngestService {
       };
 
       const flushProductsAndVariants = async () => {
-        if (productBatch.length === 0) return;
+        if (productBatch.length === 0) {
+          return;
+        }
 
         const currentProducts = productBatch;
         productBatch = [];
@@ -172,6 +190,11 @@ class ProductSyncIngestService {
         const variantRows = [];
 
         for (const rawProduct of currentProducts) {
+          if (!rawProduct?.id) {
+            skippedInvalidProducts++;
+            continue;
+          }
+
           productRows.push(flattenProduct(rawProduct));
 
           const rawVariants = Array.isArray(rawProduct.variants)
@@ -179,9 +202,17 @@ class ProductSyncIngestService {
             : [];
 
           for (const rawVariant of rawVariants) {
-            if (!rawVariant?.id) continue;
+            if (!rawVariant?.id) {
+              skippedInvalidVariants++;
+              continue;
+            }
+
             variantRows.push(flattenVariant(rawProduct.id, rawVariant));
           }
+        }
+
+        if (productRows.length === 0 && variantRows.length === 0) {
+          return;
         }
 
         await productRepository.createManyProductsAndVariants({
@@ -192,7 +223,10 @@ class ProductSyncIngestService {
         totalProductsProcessed += productRows.length;
         totalVariantsProcessed += variantRows.length;
 
-        if (totalProductsProcessed > 0 && totalProductsProcessed % 5000 === 0) {
+        if (
+          totalProductsProcessed > 0 &&
+          totalProductsProcessed % 5000 === 0
+        ) {
           await syncRepository.updateProductInitialSyncProgress({
             shopUrl: shop,
             productInitialSyncProgress: totalProductsProcessed,
@@ -212,6 +246,11 @@ class ProductSyncIngestService {
           const json = JSON.parse(line);
 
           if (!json.__parentId && json.__typename === "Product") {
+            if (!json.id) {
+              skippedInvalidProducts++;
+              return;
+            }
+
             if (!productsMap.has(json.id)) {
               productsMap.set(json.id, {
                 ...json,
@@ -221,14 +260,27 @@ class ProductSyncIngestService {
                 featuredMedia: json.featuredMedia || null,
               });
             }
+
+            return;
+          }
+
+          if (!json.__parentId) {
             return;
           }
 
           const parent = productsMap.get(json.__parentId);
-          if (!parent) return;
+          if (!parent) {
+            skippedOrphanChildren++;
+            return;
+          }
 
           switch (json.__typename) {
             case "ProductVariant":
+              if (!json.id) {
+                skippedInvalidVariants++;
+                return;
+              }
+
               parent.variants.push({
                 id: json.id,
                 title: json.title,
@@ -249,6 +301,11 @@ class ProductSyncIngestService {
               break;
 
             case "Collection":
+              if (!json.id) {
+                skippedOrphanChildren++;
+                return;
+              }
+
               parent.collections.push({
                 id: json.id,
                 title: json.title,
@@ -263,6 +320,7 @@ class ProductSyncIngestService {
               break;
           }
         } catch (err) {
+          parseErrorCount++;
           logger.error("Product sync line parse error", {
             shop,
             error: err.message,
@@ -277,6 +335,11 @@ class ProductSyncIngestService {
           }
 
           for (const product of productsMap.values()) {
+            if (!product?.id) {
+              skippedInvalidProducts++;
+              continue;
+            }
+
             productBatch.push(product);
 
             if (productBatch.length >= PRODUCT_BATCH_SIZE) {
@@ -290,11 +353,20 @@ class ProductSyncIngestService {
             shop,
             totalProductsProcessed,
             totalVariantsProcessed,
+            skippedInvalidProducts,
+            skippedInvalidVariants,
+            skippedOrphanChildren,
+            parseErrorCount,
+            replaceShopData,
           });
 
           resolve({
             totalProductsProcessed,
             totalVariantsProcessed,
+            skippedInvalidProducts,
+            skippedInvalidVariants,
+            skippedOrphanChildren,
+            parseErrorCount,
           });
         } catch (err) {
           reject(err);

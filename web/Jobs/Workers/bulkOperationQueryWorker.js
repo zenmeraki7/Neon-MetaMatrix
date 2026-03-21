@@ -10,61 +10,64 @@ export const bulkOperationQueryWorker = new Worker(
   async (job) => {
     try {
       const bulkOperationId = job.data?.admin_graphql_api_id;
+
       if (!bulkOperationId) {
         throw new Error(
           "Missing bulk operation ID in mutation webhook payload",
         );
       }
 
-      // 👉 This is where your Prisma-backed sync logic runs
       await handleSyncOperation(bulkOperationId);
 
-      return { message: "webhook mutation processing completed" };
+      return { message: "bulk operation completion processing completed" };
     } catch (err) {
-      // 👉 This is where your Prisma-backed error logging runs
       await logWebhookError({
-        shop: job.data?.shop || "unknown",
-        req: job.data, // job data provides context
+        shop: job.data?.shop || job.data?.shop_domain || "unknown",
+        req: job.data,
         source: "bulkOperationQueryWorker",
         err,
       });
-      throw err; // let Bull mark the job as failed and trigger retries
+
+      throw err;
     }
   },
-  { connection, concurrency: 1 },
+  {
+    connection,
+    concurrency: 1,
+  },
 );
 
 const logTime = () => `[${dayjs().format("YYYY-MM-DD HH:mm:ss")}]`;
 
 bulkOperationQueryWorker
   .on("error", (err) => {
-    logger.error("Queue Error in bulk operation process", {
+    logger.error("Queue error in bulk operation completion worker", {
       time: logTime(),
       error: err.message,
       stack: err.stack,
     });
   })
   .on("waiting", (jobId) => {
-    logger.debug("Job waiting to be processed", {
+    logger.debug("Bulk operation completion job waiting", {
       time: logTime(),
       jobId,
     });
   })
   .on("active", (job) => {
-    logger.info("Job started", {
+    logger.info("Bulk operation completion job started", {
       time: logTime(),
       jobId: job.id,
     });
   })
   .on("completed", (job, result) => {
-    logger.info("Job completed successfully", {
+    logger.info("Bulk operation completion job completed", {
       time: logTime(),
       jobId: job.id,
       result,
     });
   })
   .on("failed", (job, err) => {
-    logger.error("Job failed in bulk operation process", {
+    logger.error("Bulk operation completion job failed", {
       time: logTime(),
       jobId: job?.id,
       error: err.message,

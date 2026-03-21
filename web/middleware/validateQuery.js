@@ -1,35 +1,28 @@
-export const validateQuery = (schema) => {
+import { errorResponse } from "../utils/responseUtils.js";
+
+function buildValidator(schema, source) {
   return (req, res, next) => {
-    const { error, value } = schema.validate(req.query, {
+    const { error, value } = schema.validate(req[source], {
       abortEarly: false,
       convert: true,
-      allowUnknown: true,
-      stripUnknown: true,
+      stripUnknown: true, // ✅ safer
     });
 
     if (error) {
-      return res.status(400).json({
-        success: false,
-        message: "Validation failed",
-        details: error.details.map((d) => d.message),
-      });
+      const message = error.details
+        .map((detail) => detail.message)
+        .join(", ");
+
+      return res
+        .status(400)
+        .json(errorResponse(message || `Invalid ${source}`));
     }
 
-    // ✅ assign sanitized data back
-    req.query = value;
-    next();
+    req[source] = value;
+    return next();
   };
-};
+}
 
-export const validateBody = (schema) => {
-  return (req, res, next) => {
-    const { error, value } = schema.validate(req.body, { abortEarly: false });
-    
-    if (error) {
-      const errorMessages = error.details.map((detail) => detail.message);
-      return res.status(400).json({ errors: errorMessages });
-    }
-    
-    next();
-  };
-};
+// ✅ Named exports (important)
+export const validateQuery = (schema) => buildValidator(schema, "query");
+export const validateBody = (schema) => buildValidator(schema, "body");
