@@ -16,6 +16,7 @@ function normalizeJsonValue(value, fallback = {}) {
   return value;
 }
 
+
 function normalizeStatus(status, fallback = "PENDING") {
   const normalized = typeof status === "string" ? status.trim().toUpperCase() : "";
   return normalized || fallback;

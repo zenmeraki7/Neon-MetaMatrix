@@ -66,14 +66,38 @@ export const getProductsWithQuery = async (req, res) => {
     return res
       .status(200)
       .json(successResponse("Products fetched successfully", result));
-  } catch (err) {
+  }  catch (err) {
+    console.error("[POST /api/products/get-all] failed", {
+      message: err?.message,
+      stack: err?.stack,
+      query: req.query,
+      body: req.body,
+      shop: session?.shop,
+    });
+
+
+
+
+
+
+
+
+
+
+
+
+    
+
     return handleControllerError({
       err,
       req,
       res,
       session,
       source: "POST /api/products/get-all",
-      fallbackMessage: "Failed to fetch products",
+      fallbackMessage:
+        process.env.NODE_ENV === "development"
+          ? err?.message || "Failed to fetch products"
+          : "Failed to fetch products",
     });
   }
 };

@@ -1,6 +1,5 @@
 generator client {
   provider = "prisma-client-js"
-  output   = "../generated/prisma"
 }
 
 datasource db {
@@ -8,406 +7,267 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Product {
-  shop                 String
-  id                   String
-  title                String
-  handle               String?
-  status               String
-  productType          String?
-  vendor               String?
-  tags                 String[]
-  templateSuffix       String?
-  description          String?
-  createdAt            DateTime?
-  updatedAt            DateTime?
-  publishedAt          DateTime?
-  seoTitle             String?
-  seoDescription       String?
-  totalInventory       Int?
-  categoryId           String?
-  categoryName         String?
-  featuredImageUrl     String?
-  featuredImageAltText String?
-  optionsJson          Json?
-  collectionsJson      Json?
-  option1Name          String?
-  option2Name          String?
-  option3Name          String?
-  variantCount         Int?      @default(0)
-  visibleOnlineStore   Boolean?
-  variants             Variant[]
+model Shop {
+  id                    String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopDomain            String                        @unique @map("shop_domain") @db.VarChar(255)
+  shopGid               String?                       @unique @map("shop_gid") @db.VarChar(255)
+  accessToken           String                        @map("access_token")
+  accessScopes          String[]                      @default([]) @map("access_scopes")
+  apiVersion            String                        @map("api_version") @db.VarChar(32)
+  syncStatus            ShopSyncStatus                @default(PENDING) @map("sync_status")
+  installedAt           DateTime                      @default(now()) @map("installed_at") @db.Timestamptz(6)
+  uninstalledAt         DateTime?                     @map("uninstalled_at") @db.Timestamptz(6)
+  lastSuccessfulSyncAt  DateTime?                     @map("last_successful_sync_at") @db.Timestamptz(6)
+  createdAt             DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  inventoryLevels       InventoryLevelMirror[]
+  collectionMemberships ProductCollectionMembership[]
+  products              ProductMirror[]
+  productRawSnapshots   ProductRawSnapshot[]
+  syncRuns              SyncRun[]
+  variants              VariantMirror[]
+  variantRawSnapshots   VariantRawSnapshot[]
+  webhookEvents         WebhookEventLedger[]
 
-  @@id([shop, id])
-  @@index([shop, status])
-  @@index([shop, vendor])
-  @@index([shop, productType])
-  @@index([shop, title])
-  @@index([shop, handle])
-  @@index([shop, createdAt])
-  @@index([shop, updatedAt])
-  @@index([shop, publishedAt])
-  @@index([shop, categoryName])
-  @@index([shop, templateSuffix])
-  @@index([shop, option1Name])
-  @@index([shop, option2Name])
-  @@index([shop, option3Name])
-  @@index([shop, variantCount])
-  @@index([shop, visibleOnlineStore])
+  @@map("shop")
 }
 
-model Variant {
-  shop                String
-  id                  String
-  productId           String
-  title               String?
-  sku                 String?
-  barcode             String?
-  price               Float?
-  compareAtPrice      Float?
-  inventoryQuantity   Int?
-  inventoryPolicy     String?
-  taxable             Boolean?
-  taxCode             String?
-  position            Int?
-  selectedOptionsJson Json?
-  cost                Float?
-  countryOfOrigin     String?
-  hsTariffCode        String?
-  weight              Float?
-  weightUnit          String?
-  option1Value        String?
-  option2Value        String?
-  option3Value        String?
-  physicalProduct     Boolean?
-  profitMargin        Float?
-  tracked             Boolean?
-  product             Product  @relation(fields: [shop, productId], references: [shop, id])
+model SyncRun {
+  id                  String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId              String        @map("shop_id") @db.Uuid
+  phase               SyncRunPhase  @map("phase")
+  mode                SyncRunMode   @map("mode")
+  status              SyncRunStatus @default(QUEUED) @map("status")
+  bulkOperationGid    String?       @map("bulk_operation_gid") @db.VarChar(255)
+  bulkOperationStatus String?       @map("bulk_operation_status") @db.VarChar(64)
+  bulkResultUrl       String?       @map("bulk_result_url")
+  objectCount         BigInt?       @map("object_count")
+  fileSizeBytes       BigInt?       @map("file_size_bytes")
+  startedAt           DateTime?     @map("started_at") @db.Timestamptz(6)
+  completedAt         DateTime?     @map("completed_at") @db.Timestamptz(6)
+  errorCode           String?       @map("error_code") @db.VarChar(128)
+  errorMessage        String?       @map("error_message")
+  statsJson           Json?         @map("stats_json")
+  createdAt           DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  shop                Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
-  @@id([shop, id])
-  @@index([shop, sku])
-  @@index([shop, price])
-  @@index([shop, productId])
-  @@index([shop, barcode])
-  @@index([shop, title])
-  @@index([shop, compareAtPrice])
-  @@index([shop, cost])
-  @@index([shop, inventoryQuantity])
-  @@index([shop, inventoryPolicy])
-  @@index([shop, taxable])
-  @@index([shop, weight])
-  @@index([shop, weightUnit])
-  @@index([shop, countryOfOrigin])
-  @@index([shop, hsTariffCode])
-  @@index([shop, option1Value])
-  @@index([shop, option2Value])
-  @@index([shop, option3Value])
-  @@index([shop, tracked])
-  @@index([shop, physicalProduct])
-  @@index([shop, profitMargin])
+  @@index([shopId, status], map: "idx_sync_run_shop_status")
+  @@index([shopId, phase, mode], map: "idx_sync_run_shop_phase_mode")
+  @@index([shopId, createdAt], map: "idx_sync_run_shop_created_at")
+  @@map("sync_run")
 }
 
-model SpreadsheetFile {
-  id             String   @id @default(cuid())
-  shop           String?
-  editHistoryId  String?
-  fileUrl        String?
-  columnMappings Json?
-  totalRows      Int?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+model WebhookEventLedger {
+  id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId         String             @map("shop_id") @db.Uuid
+  topic          String             @map("topic") @db.VarChar(255)
+  webhookId      String?            @map("webhook_id") @db.VarChar(255)
+  apiVersion     String?            @map("api_version") @db.VarChar(32)
+  payloadHash    String             @map("payload_hash") @db.Char(64)
+  status         WebhookEventStatus @default(RECEIVED) @map("status")
+  resourceGid    String?            @map("resource_gid") @db.VarChar(255)
+  rawHeadersJson Json?              @map("raw_headers_json")
+  rawBodyJson    Json?              @map("raw_body_json")
+  receivedAt     DateTime           @default(now()) @map("received_at") @db.Timestamptz(6)
+  processedAt    DateTime?          @map("processed_at") @db.Timestamptz(6)
+  errorMessage   String?            @map("error_message")
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  shop           Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
-  @@index([shop])
+  @@unique([shopId, topic, payloadHash], map: "uq_webhook_event_shop_topic_payload_hash")
+  @@index([shopId, status, receivedAt], map: "idx_webhook_event_shop_status_received_at")
+  @@index([shopId, resourceGid], map: "idx_webhook_event_shop_resource_gid")
+  @@map("webhook_event_ledger")
 }
 
-model Store {
-  id                              String    @id @default(cuid())
-  shopUrl                         String    @unique
-  shopEmail                       String
-  accessToken                     String?
-  isCollectionSyncing             Boolean   @default(false)
-  lastCollectionSyncAt            DateTime?
-  isProductTypeSyncing            Boolean   @default(false)
-  lastProductTypeSyncAt           DateTime?
-  isProductInitialySyning         Boolean   @default(false)
-  productInitialSyncProgress      Int       @default(0)
-  shopifyBulkJobCompleted         Boolean   @default(false)
-  storeTotalProducts              Int       @default(0)
-  isProductSyncing                Boolean   @default(false)
-  lastProductSyncAt               DateTime?
-  scope                           String?   @default("")
-  installedAt                     DateTime?
-  unInstalledAt                   DateTime?
-  isUnInstalled                   Boolean   @default(false)
-  referralCode                    String?   @unique
-  referralLink                    String?   @unique
-  referredBy                      String?
-  refIsFirstSubscriptionCompleted Boolean   @default(false)
-  refSubscribedDate               DateTime?
-  refRewardExpiresAt              DateTime?
-  refRewarded                     Boolean   @default(false)
-  refSubscribedPlanDetails        Json?
-  refEarnedPrice                  Float     @default(0)
-  isCreditAvailable               Boolean   @default(false)
-  lastActivityAt                  DateTime?
-  createdAt                       DateTime  @default(now())
-  updatedAt                       DateTime  @updatedAt
+model ProductMirror {
+  id                      String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId                  String                        @map("shop_id") @db.Uuid
+  productGid              String                        @map("product_gid") @db.VarChar(255)
+  legacyProductId         BigInt?                       @map("legacy_product_id")
+  title                   String                        @map("title")
+  handle                  String                        @map("handle") @db.VarChar(255)
+  descriptionText         String?                       @map("description_text")
+  vendor                  String?                       @map("vendor") @db.VarChar(255)
+  productType             String?                       @map("product_type") @db.VarChar(255)
+  status                  String?                       @map("status") @db.VarChar(64)
+  templateSuffix          String?                       @map("template_suffix") @db.VarChar(255)
+  tags                    String[]                      @default([]) @map("tags")
+  createdAtShopify        DateTime?                     @map("created_at_shopify") @db.Timestamptz(6)
+  updatedAtShopify        DateTime?                     @map("updated_at_shopify") @db.Timestamptz(6)
+  publishedAtShopify      DateTime?                     @map("published_at_shopify") @db.Timestamptz(6)
+  hasImages               Boolean                       @default(false) @map("has_images")
+  variantCountRollup      Int                           @default(0) @map("variant_count_rollup")
+  totalInventoryRollup    Int                           @default(0) @map("total_inventory_rollup")
+  minPriceRollup          Decimal?                      @map("min_price_rollup") @db.Decimal(18, 4)
+  maxPriceRollup          Decimal?                      @map("max_price_rollup") @db.Decimal(18, 4)
+  minCompareAtPriceRollup Decimal?                      @map("min_compare_at_price_rollup") @db.Decimal(18, 4)
+  maxCompareAtPriceRollup Decimal?                      @map("max_compare_at_price_rollup") @db.Decimal(18, 4)
+  option1Name             String?                       @map("option1_name") @db.VarChar(255)
+  option2Name             String?                       @map("option2_name") @db.VarChar(255)
+  option3Name             String?                       @map("option3_name") @db.VarChar(255)
+  shopifyUpdatedAt        DateTime?                     @map("shopify_updated_at") @db.Timestamptz(6)
+  lastObservedAt          DateTime                      @default(now()) @map("last_observed_at") @db.Timestamptz(6)
+  deletedAt               DateTime?                     @map("deleted_at") @db.Timestamptz(6)
+  createdAt               DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  collectionMemberships   ProductCollectionMembership[]
+  shop                    Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  rawSnapshot             ProductRawSnapshot?
+  variants                VariantMirror[]
 
-  @@index([isProductSyncing])
-  @@index([lastProductSyncAt])
-  @@index([isCollectionSyncing])
-  @@index([lastCollectionSyncAt])
-  @@index([lastProductTypeSyncAt])
-  @@index([referralCode])
-  @@index([referredBy])
-  @@index([lastActivityAt])
-  @@index([isUnInstalled])
-  @@index([installedAt])
-  @@index([createdAt])
+  @@unique([shopId, productGid], map: "uq_product_mirror_shop_product_gid")
+  @@index([shopId, status], map: "idx_product_mirror_shop_status")
+  @@index([shopId, vendor], map: "idx_product_mirror_shop_vendor")
+  @@index([shopId, productType], map: "idx_product_mirror_shop_product_type")
+  @@index([shopId, createdAtShopify], map: "idx_product_mirror_shop_created_at_shopify")
+  @@index([shopId, updatedAtShopify], map: "idx_product_mirror_shop_updated_at_shopify")
+  @@index([shopId, publishedAtShopify], map: "idx_product_mirror_shop_published_at_shopify")
+  @@index([shopId, hasImages], map: "idx_product_mirror_shop_has_images")
+  @@index([shopId, totalInventoryRollup], map: "idx_product_mirror_shop_total_inventory")
+  @@index([shopId, minPriceRollup], map: "idx_product_mirror_shop_min_price")
+  @@index([shopId, maxPriceRollup], map: "idx_product_mirror_shop_max_price")
+  @@index([shopId, handle], map: "idx_product_mirror_shop_handle")
+  @@map("product_mirror")
 }
 
-model Subscription {
-  id                    String             @id @default(cuid())
-  shop                  String
-  planKey               String?
-  planName              String?
-  subscriptionId        String?
-  status                SubscriptionStatus @default(FREE)
-  pendingSubscriptionId String?
-  pendingPlanKey        String?
-  pendingPlanName       String?
-  trialEndsAt           DateTime?
-  currentPeriodEnd      DateTime?
-  createdAt             DateTime           @default(now())
-  updatedAt             DateTime           @updatedAt
+model VariantMirror {
+  id                      String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId                  String                 @map("shop_id") @db.Uuid
+  variantGid              String                 @map("variant_gid") @db.VarChar(255)
+  productGid              String                 @map("product_gid") @db.VarChar(255)
+  inventoryItemGid        String?                @map("inventory_item_gid") @db.VarChar(255)
+  legacyVariantId         BigInt?                @map("legacy_variant_id")
+  title                   String?                @map("title")
+  sku                     String?                @map("sku") @db.VarChar(255)
+  barcode                 String?                @map("barcode") @db.VarChar(255)
+  price                   Decimal?               @map("price") @db.Decimal(18, 4)
+  compareAtPrice          Decimal?               @map("compare_at_price") @db.Decimal(18, 4)
+  cost                    Decimal?               @map("cost") @db.Decimal(18, 4)
+  taxable                 Boolean?               @map("taxable")
+  requiresShipping        Boolean?               @map("requires_shipping")
+  inventoryPolicy         String?                @map("inventory_policy") @db.VarChar(64)
+  inventoryTracked        Boolean?               @map("inventory_tracked")
+  inventoryQuantityRollup Int                    @default(0) @map("inventory_quantity_rollup")
+  option1Value            String?                @map("option1_value") @db.VarChar(255)
+  option2Value            String?                @map("option2_value") @db.VarChar(255)
+  option3Value            String?                @map("option3_value") @db.VarChar(255)
+  weight                  Decimal?               @map("weight") @db.Decimal(18, 6)
+  weightUnit              String?                @map("weight_unit") @db.VarChar(32)
+  weightGrams             Int?                   @map("weight_grams")
+  countryOfOrigin         String?                @map("country_of_origin") @db.VarChar(8)
+  hsTariffCode            String?                @map("hs_tariff_code") @db.VarChar(64)
+  shopifyUpdatedAt        DateTime?              @map("shopify_updated_at") @db.Timestamptz(6)
+  lastObservedAt          DateTime               @default(now()) @map("last_observed_at") @db.Timestamptz(6)
+  deletedAt               DateTime?              @map("deleted_at") @db.Timestamptz(6)
+  createdAt               DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  inventoryLevels         InventoryLevelMirror[]
+  shop                    Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  product                 ProductMirror          @relation(fields: [shopId, productGid], references: [shopId, productGid], onDelete: Cascade)
+  rawSnapshot             VariantRawSnapshot?
 
-  @@index([shop])
+  @@unique([shopId, variantGid], map: "uq_variant_mirror_shop_variant_gid")
+  @@index([shopId, productGid], map: "idx_variant_mirror_shop_product_gid")
+  @@index([shopId, inventoryItemGid], map: "idx_variant_mirror_shop_inventory_item_gid")
+  @@index([shopId, sku], map: "idx_variant_mirror_shop_sku")
+  @@index([shopId, barcode], map: "idx_variant_mirror_shop_barcode")
+  @@index([shopId, price], map: "idx_variant_mirror_shop_price")
+  @@index([shopId, compareAtPrice], map: "idx_variant_mirror_shop_compare_at_price")
+  @@index([shopId, inventoryQuantityRollup], map: "idx_variant_mirror_shop_inventory_qty")
+  @@index([shopId, inventoryPolicy], map: "idx_variant_mirror_shop_inventory_policy")
+  @@index([shopId, weightGrams], map: "idx_variant_mirror_shop_weight_grams")
+  @@map("variant_mirror")
 }
 
-model Suggestion {
-  id         String   @id @default(cuid())
-  email      String
-  suggestion String
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+model InventoryLevelMirror {
+  id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId           String         @map("shop_id") @db.Uuid
+  inventoryItemGid String         @map("inventory_item_gid") @db.VarChar(255)
+  variantGid       String?        @map("variant_gid") @db.VarChar(255)
+  locationGid      String         @map("location_gid") @db.VarChar(255)
+  locationName     String?        @map("location_name") @db.VarChar(255)
+  available        Int?           @map("available")
+  onHand           Int?           @map("on_hand")
+  updatedAtShopify DateTime?      @map("updated_at_shopify") @db.Timestamptz(6)
+  lastObservedAt   DateTime       @default(now()) @map("last_observed_at") @db.Timestamptz(6)
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  shop             Shop           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  variant          VariantMirror? @relation(fields: [shopId, variantGid], references: [shopId, variantGid], onDelete: Cascade)
 
-  @@index([email])
+  @@unique([shopId, inventoryItemGid, locationGid], map: "uq_inventory_level_shop_item_location")
+  @@index([shopId, locationGid, available], map: "idx_inventory_level_shop_location_available")
+  @@index([shopId, variantGid, locationGid], map: "idx_inventory_level_shop_variant_location")
+  @@map("inventory_level_mirror")
 }
 
-model SyncHistory {
-  id                   String             @id @default(cuid())
-  shop                 String
-  bulkOperationId      String?
-  responseUrl          String?
-  status               SyncStatus         @default(processing)
-  duration             Int?               @default(0)
-  recordCount          Int?
-  operationType        SyncOperationType?
-  isInitialProductSync Boolean            @default(false)
-  createdAt            DateTime           @default(now())
-  updatedAt            DateTime           @updatedAt
+model ProductCollectionMembership {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId          String        @map("shop_id") @db.Uuid
+  productGid      String        @map("product_gid") @db.VarChar(255)
+  collectionGid   String        @map("collection_gid") @db.VarChar(255)
+  collectionTitle String?       @map("collection_title") @db.VarChar(255)
+  isManual        Boolean       @default(false) @map("is_manual")
+  lastObservedAt  DateTime      @default(now()) @map("last_observed_at") @db.Timestamptz(6)
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  shop            Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  product         ProductMirror @relation(fields: [shopId, productGid], references: [shopId, productGid], onDelete: Cascade)
 
-  @@index([shop, createdAt])
-  @@index([shop, status])
-  @@index([shop, operationType])
+  @@unique([shopId, productGid, collectionGid], map: "uq_product_collection_membership")
+  @@index([shopId, collectionGid], map: "idx_pcm_shop_collection_gid")
+  @@index([shopId, productGid], map: "idx_pcm_shop_product_gid")
+  @@index([shopId, isManual], map: "idx_pcm_shop_is_manual")
+  @@map("product_collection_membership")
 }
 
-model EditHistory {
-  id                String         @id @default(cuid())
-  shop              String
-  bulkOperationId   String?
-  title             Json?
-  queryFilter       String         @default("")
-  editedType        String?
-  rules             Json?
-  affectedFields    Json?
-  locationId        String?
-  status            String         @default("pending")
-  scheduledAt       DateTime?
-  scheduledUndoAt   DateTime?
-  processedCount    Int            @default(0)
-  totalItems        Int            @default(0)
-  totalRows         Int            @default(0)
-  durationMs        Int            @default(0)
-  editTime          DateTime       @default(now())
-  startedAt         DateTime
-  completedAt       DateTime?
-  undo              Json?
-  batch             Json?
-  type              String?        @default("Manual edit")
-  processingBatchId String?
-  scheduledTask     String?
-  user              String?
-  isFavourite       Boolean        @default(false)
-  isSpreadsheetEdit Boolean        @default(false)
-  error             Json?
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
-  changeRecords     ChangeRecord[]
+model ProductRawSnapshot {
+  id               String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId           String        @map("shop_id") @db.Uuid
+  productGid       String        @map("product_gid") @db.VarChar(255)
+  rawDocument      Json          @map("raw_document")
+  rawMetafields    Json?         @map("raw_metafields")
+  rawPublications  Json?         @map("raw_publications")
+  rawSeo           Json?         @map("raw_seo")
+  documentHash     String?       @map("document_hash") @db.Char(64)
+  shopifyUpdatedAt DateTime?     @map("shopify_updated_at") @db.Timestamptz(6)
+  lastObservedAt   DateTime      @default(now()) @map("last_observed_at") @db.Timestamptz(6)
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  shop             Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  product          ProductMirror @relation(fields: [shopId, productGid], references: [shopId, productGid], onDelete: Cascade)
 
-  @@index([shop, status, type, updatedAt], map: "shop_status_type_recent")
-  @@index([shop])
-  @@index([isSpreadsheetEdit])
+  @@unique([shopId, productGid], map: "uq_product_raw_snapshot_shop_product_gid")
+  @@index([shopId, lastObservedAt], map: "idx_product_raw_snapshot_shop_last_observed")
+  @@map("product_raw_snapshot")
 }
 
-model Collection {
-  id        String   @id @default(cuid())
-  shop      String?
-  shopifyId String?
-  title     String?
-  handle    String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+model VariantRawSnapshot {
+  id               String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId           String        @map("shop_id") @db.Uuid
+  variantGid       String        @map("variant_gid") @db.VarChar(255)
+  productGid       String        @map("product_gid") @db.VarChar(255)
+  rawDocument      Json          @map("raw_document")
+  rawMetafields    Json?         @map("raw_metafields")
+  rawInventoryItem Json?         @map("raw_inventory_item")
+  documentHash     String?       @map("document_hash") @db.Char(64)
+  shopifyUpdatedAt DateTime?     @map("shopify_updated_at") @db.Timestamptz(6)
+  lastObservedAt   DateTime      @default(now()) @map("last_observed_at") @db.Timestamptz(6)
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  shop             Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  variant          VariantMirror @relation(fields: [shopId, variantGid], references: [shopId, variantGid], onDelete: Cascade)
 
-  @@index([updatedAt])
-  @@index([shop, title])
+  @@unique([shopId, variantGid], map: "uq_variant_raw_snapshot_shop_variant_gid")
+  @@index([shopId, productGid], map: "idx_variant_raw_snapshot_shop_product_gid")
+  @@index([shopId, lastObservedAt], map: "idx_variant_raw_snapshot_shop_last_observed")
+  @@map("variant_raw_snapshot")
 }
 
-model ExportHistory {
-  id            String    @id @default(cuid())
-  shop          String
-  filename      String
-  filters       Json
-  exportedData  String?
-  status        String
-  duration      String
-  totalItems    Int?
-  errorMessage  String?
-  exportTime    DateTime?
-  type          String    @default("Manual export")
-  isFavourite   Boolean   @default(false)
-  scheduledTask String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-
-  @@index([shop, createdAt])
-  @@index([shop, status])
-  @@index([shop, isFavourite])
-  @@index([shop, type])
-  @@index([shop, exportTime])
-}
-
-model ExportJob {
-  id          String    @id @default(cuid())
-  shop        String
-  filterQuery String    @default("{}")
-  filename    String
-  fields      String[]
-  status      String    @default("PENDING")
-  fileUrl     String?
-  type        String    @default("Manual export")
-  totalItems  Int?
-  durationMs  Int?
-  startedAt   DateTime?
-  completedAt DateTime?
-  error       String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-
-  @@index([shop])
-  @@index([status])
-}
-
-model ChangeRecord {
-  id                  String      @id @default(cuid())
-  editHistoryId       String
-  productId           String
-  shop                String
-  options             Json?
-  productFieldChanges Json?
-  variantFieldChanges Json?
-  image               String?
-  title               String
-  scope               String
-  status              String      @default("pending")
-  batchId             String?
-  createdAt           DateTime    @default(now())
-  updatedAt           DateTime    @updatedAt
-  editHistory         EditHistory @relation(fields: [editHistoryId], references: [id])
-
-  @@index([editHistoryId])
-  @@index([productId])
-  @@index([shop])
-  @@index([status])
-  @@index([batchId])
-}
-
-model FilterTrack {
-  id                  String          @id @default(cuid())
-  shop                String?
-  filterParams        Json?
-  previewFilterParams Json?
-  respondProductCount Int?
-  previewResCount     Int?
-  type                FilterTrackType @default(filter)
-  field               String?
-  editOption          String?
-  searchKey           String?
-  replaceText         String?
-  supportValue        String?
-  value               Json?
-  en                  String?
-  createdAt           DateTime        @default(now())
-  updatedAt           DateTime        @updatedAt
-
-  @@index([shop])
-  @@index([type])
-}
-
-model ReferralCode {
-  id           String   @id @default(cuid())
-  shop         String
-  referralCode String
-  createdAt    DateTime @default(now())
-
-  @@index([shop])
-}
-
-model AffiliateUser {
-  id                       String   @id @default(cuid())
-  name                     String
-  email                    String   @unique
-  referralCode             String   @unique
-  referralLink             String   @unique
-  numberOfReferrals        Int      @default(0)
-  numberOfStoresSubscribed Int      @default(0)
-  totalAmountEarned        Float    @default(0)
-  phone                    String?
-  createdAt                DateTime @default(now())
-  updatedAt                DateTime @updatedAt
-
-  @@index([referralCode])
-}
-
-model Location {
-  shop String
-  id   String
-  name String
-
-  @@id([shop, id])
-  @@index([shop])
-}
-
-model ErrorLog {
-  id        BigInt   @id @default(autoincrement())
-  shop      String
-  type      String
-  level     String   @default("error")
-  message   String
-  stack     String?
-  source    String?
-  request   Json?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([shop])
-  @@index([type])
-  @@index([level])
-  @@index([source])
-  @@index([createdAt])
-}
-
-model ShopifySession {
+model shopify_sessions {
   id               String  @id @db.VarChar(255)
   shop             String  @db.VarChar(255)
   state            String  @db.VarChar(255)
@@ -416,37 +276,51 @@ model ShopifySession {
   expires          Int?
   onlineAccessInfo String? @db.VarChar(255)
   accessToken      String? @db.VarChar(255)
-
-  @@map("shopify_sessions")
 }
 
-model ShopifySessionMigration {
-  migrationName String @id @map("migration_name") @db.VarChar(255)
-
-  @@map("shopify_sessions_migrations")
+model shopify_sessions_migrations {
+  migration_name String @id @db.VarChar(255)
 }
 
-enum SubscriptionStatus {
-  FREE
+enum ShopSyncStatus {
   PENDING
-  ACTIVE
+  BOOTSTRAPPING
+  HEALTHY
+  DEGRADED
+  FAILED
+  UNINSTALLED
+}
+
+enum SyncRunMode {
+  BOOTSTRAP
+  DELTA
+  RECONCILE
+}
+
+enum SyncRunPhase {
+  BULK_PRODUCTS_CORE
+  BULK_VARIANTS_CORE
+  BULK_COLLECTION_MEMBERSHIP
+  BULK_INVENTORY_LEVELS
+  ROLLUP_REBUILD_CORE
+  REFRESH_PRODUCT
+  REFRESH_VARIANT
+  REFRESH_INVENTORY_ITEM
+  REFRESH_COLLECTION_MEMBERSHIP
+}
+
+enum SyncRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
   CANCELLED
-  EXPIRED
 }
 
-enum SyncStatus {
-  completed
-  processing
-  failed
-}
-
-enum SyncOperationType {
-  Collection
-  ProductType
-  Product
-}
-
-enum FilterTrackType {
-  filter
-  preview
+enum WebhookEventStatus {
+  RECEIVED
+  DEDUPED
+  ENQUEUED
+  PROCESSED
+  FAILED
 }
