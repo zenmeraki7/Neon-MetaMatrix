@@ -631,20 +631,21 @@ export const importCsvController = async (req, res) => {
       return res.status(400).json({ message: "columnMappings missing" });
     }
 
-    const parsedMappings =
-      typeof columnMappings === "string"
-        ? JSON.parse(columnMappings)
-        : columnMappings;
+    // ✅ Always parse — matches Mongo: JSON.parse(columnMappings)
+    const parsedMappings = JSON.parse(columnMappings);
 
     const localFilePath = req.file.path;
 
-    // 1. Create edit history first
+    // ✅ Step 1: Create EditHistory first (same order as Mongo)
     const newHistory = await prisma.editHistory.create({
       data: {
         shop,
         title: createMultiLanguageForFileEdit(req.file.originalname),
         editedType: "mixed",
         startedAt: new Date(),
+        isSpreadsheetEdit: true,  
+        undo: { allowed: true },
+        rules: [{ field: "mixed" }],
         batch: {
           lastProductId: null,
           hasMore: false,
@@ -653,7 +654,7 @@ export const importCsvController = async (req, res) => {
       },
     });
 
-    // 2. Create spreadsheet file and link via editHistoryId
+    // ✅ Step 2: Create SpreadsheetFile linked to history
     const importDoc = await prisma.spreadsheetFile.create({
       data: {
         shop,
@@ -665,7 +666,7 @@ export const importCsvController = async (req, res) => {
 
     await clearKeyCaches(`${shop}:fetchHistories`);
 
-    // 3. Queue job
+    // ✅ Step 3: Queue job — same payload as Mongo
     await addbulkImportEditJob({
       historyId: newHistory.id,
       filePath: localFilePath,
@@ -673,6 +674,7 @@ export const importCsvController = async (req, res) => {
       session,
     });
 
+    // ✅ Same response shape as Mongo
     return res.json({
       success: true,
       importId: newHistory.id,
